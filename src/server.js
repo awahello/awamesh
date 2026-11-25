@@ -398,6 +398,11 @@ async function wgBoot() {
     _wgOn = false;
     setManaged(false);
     log("[wg] 接管失败，回退到手动模式：" + e.message);
+    log("[wg] 排查清单：");
+    log("[wg]   1) compose 里要有  cap_add: [NET_ADMIN]（建接口必需）与 SYS_MODULE（加载模块）");
+    log("[wg]   2) 宿主机内核要有 wireguard 模块：modprobe wireguard && lsmod | grep wireguard");
+    log("[wg]   3) rootless Docker 里 NET_ADMIN 无效：docker info | grep -i rootless 应为 false");
+    log("[wg]   4) 实在不行把 privileged: true 打开（能跑通再回来收敛权限）");
   }
 }
 
