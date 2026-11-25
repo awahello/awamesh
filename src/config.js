@@ -6,7 +6,7 @@ const env = process.env;
 
 export const cfg = {
   version: "0.1.0",
-  port: Number(env.AWA_PORT || 8080),
+  port: Number(env.AWA_PORT || 18443),
   host: env.AWA_HOST || "0.0.0.0",
   dataDir: path.resolve(env.AWA_DATA_DIR || "./data"),
   mode: (env.AWA_MODE || "full").toLowerCase(), // full | tiny

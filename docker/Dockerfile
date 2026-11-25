@@ -9,16 +9,16 @@ COPY src ./src
 COPY public ./public
 
 ENV NODE_ENV=production \
-    AWA_PORT=8080 \
+    AWA_PORT=18443 \
     AWA_HOST=0.0.0.0 \
     AWA_DATA_DIR=/data
 
 RUN mkdir -p /data && chown -R node:node /app /data
 USER node
 
-EXPOSE 8080
+EXPOSE 18443
 
 HEALTHCHECK --interval=30s --timeout=4s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "const p=process.env.AWA_PORT||18443;fetch('http://127.0.0.1:'+p+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "--no-warnings", "src/server.js"]

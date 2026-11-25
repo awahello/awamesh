@@ -5,7 +5,7 @@
 set -e
 
 DIR="${1:-${AWA_DIR:-/opt/awamesh}}"
-PORT="${AWA_PORT:-8080}"
+PORT="${AWA_PORT:-18443}"
 IMAGE="${AWA_IMAGE:-ghcr.io/OWNER/awamesh:latest}"
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -23,6 +23,19 @@ else
 fi
 echo "    Docker 就绪，安装目录：$DIR"
 
+# 端口占用自动避让（18443 起，往后找 10 个）
+if command -v ss >/dev/null 2>&1; then
+  i=0
+  while [ $i -lt 10 ]; do
+    if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${PORT}$"; then
+      echo "    端口 $PORT 已被占用，尝试 $((PORT + 1))"
+      PORT=$((PORT + 1)); i=$((i + 1))
+    else
+      break
+    fi
+  done
+fi
+
 say "==> 2/5 准备目录"
 mkdir -p "$DIR/data"
 cd "$DIR"
@@ -38,9 +51,10 @@ services:
     image: ${IMAGE}
     container_name: awamesh
     ports:
-      - "${PORT}:8080"
+      - "${PORT}:${PORT}"
     environment:
       - AWA_SECRET=${SECRET}
+      - AWA_PORT=${PORT}
       - AWA_DATA_DIR=/data
       - AWA_MODE=full
       - AWA_BACKEND=mock

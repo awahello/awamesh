@@ -5,3 +5,5 @@ node_modules/
 cookies.txt
 .gh-device.json
 .gh-token
+data*/
+data*/

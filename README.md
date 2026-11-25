@@ -38,7 +38,7 @@ services:
   awamesh:
     image: ghcr.io/OWNER/awamesh:latest
     container_name: awamesh
-    ports: ["8080:8080"]
+    ports: ["18443:18443"]
     environment:
       - AWA_SECRET=换成一串长随机字符
       - AWA_DATA_DIR=/data
@@ -57,7 +57,7 @@ docker compose logs awamesh | grep 口令     # 首次启动会打印后台口�
 
 ```bash
 node --version        # 需要 >= 22.5（内置 node:sqlite）
-npm start             # 默认 http://127.0.0.1:8080
+npm start             # 默认 http://127.0.0.1:18443
 ```
 
 首次启动会生成 `data/initial-admin.txt` 并在终端打印口令。
@@ -116,7 +116,7 @@ awamesh 不接管你已有的东西，只做增量：
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `AWA_PORT` | 8080 | 面板端口 |
+| `AWA_PORT` | 18443 | 面板端口（换端口时容器内也一起改） |
 | `AWA_HOST` | 0.0.0.0 | 监听地址（只给本机用可设 127.0.0.1） |
 | `AWA_DATA_DIR` | ./data | 数据目录（SQLite + 首次口令 + 密钥） |
 | `AWA_SECRET` | 自动生成并落盘 | 会话签名与凭证存储用 |
@@ -235,6 +235,12 @@ npm run selftest
 
 **Q：面板能暴露到公网吗？**
 可以，但建议只在内网或 mesh 内访问，前面加一层反代 + HTTPS。默认没有 TLS，面板不做公网认证的加固承诺。
+
+**Q：端口冲突怎么办？**
+默认面板端口是 **18443**（避开 8080/8000/9000 这些常被占用的）。要改的话两处一起改：compose 里的 `ports` 和 `AWA_PORT`，两者必须一致，否则容器起来了但访问不到。用 `install.sh` 时会自动检测占用并往后找。
+
+**Q：端口冲突怎么办？**
+默认面板端口是 **18443**（避开 8080/8000/9000 这些常被占用的）。要改的话两处一起改：compose 里的 `ports` 和 `AWA_PORT`，两者必须一致，否则容器起来了但访问不到。用 `install.sh` 时会自动检测占用并往后找。
 
 **Q：会消耗我多少内存？**
 控制台空载约 50–60MB（Node），中继几乎不吃 CPU 只吃带宽。`AWA_MODE=tiny` 可再降。
