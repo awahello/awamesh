@@ -77,7 +77,33 @@ CREATE TABLE IF NOT EXISTS authkeys (
 );
 `);
 
+// 迁移：给演示数据打标记，切到真实后端时自动清掉
+for (const t of ["devices", "relays", "tunnels"]) {
+  try { db.exec(`ALTER TABLE ${t} ADD COLUMN demo INTEGER DEFAULT 0`); } catch { /* 已存在 */ }
+}
+
 export const now = () => Math.floor(Date.now() / 1000);
+
+/** 清空演示数据：既按 demo 标记，也按种子 ID（兼容升级前建的库，那时没有 demo 列） */
+const SEED_IDS = {
+  devices: ["d_router", "d_seoul", "d_win", "d_db", "d_hk", "d_nas"],
+  relays: ["r_hk", "r_seoul", "r_home"],
+  tunnels: ["t_blog", "t_rule", "t_nas", "t_api"],
+};
+
+export function clearDemo() {
+  const out = {};
+  for (const [table, ids] of Object.entries(SEED_IDS)) {
+    const marks = ids.map(() => "?").join(",");
+    const r = db.prepare(`DELETE FROM ${table} WHERE demo = 1 OR id IN (${marks})`).run(...ids);
+    out[table] = r.changes;
+  }
+  if (out.devices) {
+    const marks = SEED_IDS.devices.map(() => "?").join(",");
+    db.prepare(`DELETE FROM events WHERE device_id IN (${marks})`).run(...SEED_IDS.devices);
+  }
+  return out;
+}
 
 export function setting(key, value) {
   if (value === undefined) {
@@ -135,8 +161,8 @@ export function seedIfEmpty() {
 
   const t = now();
   const dev = (id, name, ip, os, roles, path, ms, relay, seen, tags) =>
-    db.prepare(`INSERT INTO devices(id,name,mesh_ip,hostname,os,client_ver,tags,roles,path,latency_ms,relay,last_seen,key_fp,created_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    db.prepare(`INSERT INTO devices(id,name,mesh_ip,hostname,os,client_ver,tags,roles,path,latency_ms,relay,last_seen,key_fp,created_at,demo)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)`)
       .run(id, name, ip, name, os, "1.90.1", tags, roles, path, ms, relay, seen, "ek:" + crypto.randomBytes(4).toString("hex"), t - 86400);
 
   dev("d_router", "router-home", "10.88.0.1", "openwrt", "node,gateway", "direct", 12, null, t - 3, "home,gateway");
@@ -149,8 +175,8 @@ export function seedIfEmpty() {
   db.prepare("UPDATE devices SET revoked_at = NULL").run();
 
   const rel = (id, name, region, code, addr, port, vis, quota, used, enabled) =>
-    db.prepare(`INSERT INTO relays(id,name,region,region_code,addr,port,visibility,quota_gb,used_gb,state,enabled,last_health)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+    db.prepare(`INSERT INTO relays(id,name,region,region_code,addr,port,visibility,quota_gb,used_gb,state,enabled,last_health,demo)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)`)
       .run(id, name, region, code, addr, port, vis, quota, used, "online", enabled, t - 10);
 
   rel("r_hk", "香港 · hk-edge", "香港", "hk", "hk.edge.example.com", 18444, "public", 500, 62, 1);
@@ -158,7 +184,7 @@ export function seedIfEmpty() {
   rel("r_home", "家宽 · router-home", "家宽", "home", "home.example.com", 18444, "private", 0, 18, 1);
 
   const tun = (id, name, host, back, health, ms, mig) =>
-    db.prepare(`INSERT INTO tunnels(id,name,hostname,backend,health,latency_ms,last_check,migratable) VALUES(?,?,?,?,?,?,?,?)`)
+    db.prepare(`INSERT INTO tunnels(id,name,hostname,backend,health,latency_ms,last_check,migratable,demo) VALUES(?,?,?,?,?,?,?,?,1)`)
       .run(id, name, host, back, health, ms, t - 30, mig);
 
   tun("t_blog", "blog", "blog.akkdiy.cn", "10.88.0.1:8080", "ok", 8, 0);

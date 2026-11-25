@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cfg, log } from "./config.js";
 import { api } from "./api.js";
-import { seedIfEmpty, pruneEvents, addEvent, demoHeartbeat } from "./db.js";
+import { seedIfEmpty, pruneEvents, addEvent, demoHeartbeat, clearDemo } from "./db.js";
 import {
   ensureAdminCredential, verifyCredential, sessionToken, validSession,
   cookieHeader, clearCookieHeader,
@@ -200,7 +200,14 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-if (cfg.backend === "mock") seedIfEmpty();
+if (cfg.backend === "mock") {
+  seedIfEmpty();
+} else {
+  const cleared = clearDemo();
+  if (cleared.devices || cleared.relays || cleared.tunnels) {
+    log(`已清理演示数据：设备 ${cleared.devices} / 中继 ${cleared.relays} / 隧道 ${cleared.tunnels}`);
+  }
+}
 ensureAdminCredential();
 if (cfg.backend === "mock") { demoHeartbeat(); setInterval(demoHeartbeat, 30_000).unref(); }
 pruneEvents();
