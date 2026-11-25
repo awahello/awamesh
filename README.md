@@ -64,6 +64,33 @@ npm start             # 默认 http://127.0.0.1:18443
 
 ---
 
+## 安装排障
+
+**容器一直重启（Restarting）** —— 先看日志，90% 是下面三种：
+
+```bash
+docker compose logs --tail 50 awamesh
+```
+
+| 日志特征 | 原因 | 修复 |
+|---|---|---|
+| `EACCES` 或「数据目录不可写」 | 宿主机 `./data` 由 root 创建，容器以 `node`(uid 1000) 运行 | `sudo chown -R 1000:1000 ./data`；或把挂载改成命名卷 |
+| 「AWA_DATA_DIR 含换行或制表符」 | 终端粘贴 heredoc 时换行丢失，两行环境变量粘成了一行 | 重新写 compose，见下 |
+| `EADDRINUSE` | 18443 被占用 | 同时改 `ports` 与 `AWA_PORT` |
+
+**别手打 heredoc。** 终端粘贴长内容经常丢换行，直接 clone 用仓库里的文件最稳：
+
+```bash
+git clone https://github.com/awahello/awamesh /opt/awamesh
+cd /opt/awamesh
+sed -i 's/change_me_to_a_long_random_string/'"$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')"'/' docker-compose.yml
+docker compose up -d
+```
+
+或者 1Panel：**容器 → 编排 → 创建编排**，把仓库里 `docker-compose.yml` 的内容整段粘进编辑器（面板的编辑器不会丢换行）。
+
+**镜像架构**：`ghcr.io/awahello/awamesh:latest` 同时提供 `linux/amd64` 与 `linux/arm64`，树莓派/Debian arm64 直接可用。
+
 ## 界面
 
 | 页面 | 做什么 |

@@ -6,7 +6,7 @@ set -e
 
 DIR="${1:-${AWA_DIR:-/opt/awamesh}}"
 PORT="${AWA_PORT:-18443}"
-IMAGE="${AWA_IMAGE:-ghcr.io/OWNER/awamesh:latest}"
+IMAGE="${AWA_IMAGE:-ghcr.io/awahello/awamesh:latest}"
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*"; }
