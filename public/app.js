@@ -307,14 +307,14 @@ async function viewRelays(main) {
         <div class="card">
           <div class="card-h">
             <b style="display:flex;align-items:center;gap:7px">
-              <span class="dot ${r.enabled ? (r.state === "online" ? "ok" : "warn") : "off"}"></span>${esc(r.region)} · ${esc(r.name.split("·").pop().trim())}
+              <span class="dot ${!r.enabled ? "off" : r.state === "online" ? "ok" : r.state === "offline" ? "bad" : "warn"}"></span>${esc(r.region)} · ${esc(r.name.split("·").pop().trim())}
             </b>
             ${r.visibility === "private" ? `<span class="tag info">仅内网</span>` : `<span class="tag">公网</span>`}
           </div>
           <div class="mono muted" style="font-size:12px;margin-bottom:8px">${esc(r.addr)}:${r.port}</div>
           <div style="display:flex;justify-content:space-between;font-size:12px" class="muted">
             <span>本月 ${fmtGb(r.used_gb)}${r.quota_gb ? " / " + fmtGb(r.quota_gb) : ""}</span>
-            <span>${r.state === "online" ? "健康" : r.state}</span>
+            <span>${r.state === "online" ? "在线" : r.state === "offline" ? "不可达" : "未验证"}</span>
           </div>
           <div class="bar" style="margin:6px 0 12px"><i style="width:${r.quota_gb ? Math.min(100, Math.round(r.used_gb / r.quota_gb * 100)) : 5}%"></i></div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -325,7 +325,11 @@ async function viewRelays(main) {
           </div>
         </div>`).join("")}
     </div>`;
-  main.querySelector('[data-act="refresh"]').onclick = renderView;
+  main.querySelector('[data-act="refresh"]').onclick = async () => {
+    try { await api("/api/relays/probe", { method: "POST", body: "{}" }); toast("已重新探测"); }
+    catch (e) { toast(e.message, true); }
+    renderView();
+  };
   main.querySelector('[data-act="map"]').onclick = async () => {
     try {
       const m = await api("/api/relays/map");

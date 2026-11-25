@@ -46,53 +46,6 @@ function groupByTag(devices) {
 }
 
 
-/** 生成中继机的部署脚本（derper + systemd），只做打印，不远程执行 */
-function relayScript(relay, cfg) {
-  const port = relay.port || cfg.relayPort;
-  return `#!/bin/sh
-# awamesh 中继节点部署脚本（${relay.region}）
-# 在 ${relay.addr} 这台机器上以 root 执行；需要 Go 1.22+ 或已安装 derper
-set -e
-
-PORT=${port}
-HOSTNAME_ARG="${relay.addr}"
-
-if ! command -v derper >/dev/null 2>&1; then
-  echo "==> 安装 derper（需要 Go）"
-  command -v go >/dev/null 2>&1 || { echo "请先安装 Go 1.22+：https://go.dev/dl/"; exit 1; }
-  go install tailscale.com/cmd/derper@latest
-  cp "$(go env GOPATH)/bin/derper" /usr/local/bin/derper
-fi
-
-echo "==> 写 systemd 单元"
-cat >/etc/systemd/system/derper.service <<EOF
-[Unit]
-Description=awamesh DERP relay
-After=network-online.target
-
-[Service]
-ExecStart=/usr/local/bin/derper -a :$PORT -stun -hostname=$HOSTNAME_ARG
-Restart=always
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now derper
-sleep 2
-systemctl --no-pager status derper | head -8
-
-echo
-echo "==> 自检"
-curl -fsS "http://127.0.0.1:$PORT/" >/dev/null && echo "  本地 443 端口可达"
-echo "  下一步：在 awamesh 的「中继节点」页确认状态为在线，地图会自动推送"
-`;
-}
-
-
-/** 分配一个空闲 mesh 地址（跳过 .1 服务端与已占用） */
 export function allocAddress(subnet) {
   const used = new Set(db.prepare("SELECT address FROM wg_peers").all().map(r => r.address));
   for (const d of db.prepare("SELECT mesh_ip FROM devices WHERE mesh_ip IS NOT NULL AND revoked_at IS NULL").all()) {
@@ -222,6 +175,81 @@ export async function updateNodeEndpoint(nodeToken, endpoint, port) {
   return { ok: true, changed: self.endpoint !== ep };
 }
 
+/** 生成中继机的部署脚本：优先 Docker，其次 Go 安装；交互式 shell 里失败不会退出会话 */
+function relayScript(relay, cfg) {
+  const port = relay.port || cfg.relayPort;
+  return `#!/bin/sh
+# awamesh 中继节点部署（${relay.region}）
+# 建议在「有公网 IP 的 Linux VPS」上执行；路由器（OpenWrt）内存与工具链都不适合跑 derper
+set -u
+
+PORT=${port}
+HOSTNAME_ARG="${relay.addr}"
+
+die() {
+  echo "✗ $*" >&2
+  if [ -t 0 ]; then
+    echo "" >&2
+    echo "（当前是交互式 shell：脚本已中止，会话保持，不会断开）" >&2
+    kill -INT $$ 2>/dev/null || true
+    return 1 2>/dev/null || true
+  fi
+  exit 1
+}
+
+echo "==> 目标：$HOSTNAME_ARG:$PORT"
+
+# 无公网地址的机器当不了中继
+case "$HOSTNAME_ARG" in
+  10.*|127.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)
+    die "这个地址是内网地址，中继必须用公网 IP 或解析到公网的域名" ;;
+esac
+
+if ! command -v docker >/dev/null 2>&1 && ! command -v go >/dev/null 2>&1; then
+  die "这台机器既没有 docker 也没有 go。请换一台 Linux VPS，或先装 docker"
+fi
+
+if command -v docker >/dev/null 2>&1; then
+  echo "==> 用 Docker 运行 derper（无需安装 Go）"
+  docker rm -f awamesh-derp >/dev/null 2>&1 || true
+  docker run -d --name awamesh-derp --restart unless-stopped \
+    -p "$PORT:$PORT" -p "$PORT:$PORT/udp" \
+    --entrypoint derper \
+    ghcr.io/awahello/awamesh-relay:latest \
+    -a ":$PORT" -stun -hostname "$HOSTNAME_ARG" || die "docker 启动失败，检查端口占用与镜像拉取"
+else
+  echo "==> 没有 docker，改用 Go 安装 derper"
+  command -v go >/dev/null 2>&1 || die "没有 go，请先装 Go 1.22+ 或 docker"
+  go install tailscale.com/cmd/derper@latest || die "go install 失败（网络或 Go 版本问题）"
+  cp "$(go env GOPATH)/bin/derper" /usr/local/bin/derper || die "拷贝 derper 失败（需要 root）"
+
+  cat >/etc/systemd/system/derper.service <<EOF
+[Unit]
+Description=awamesh DERP relay
+After=network-online.target
+[Service]
+ExecStart=/usr/local/bin/derper -a :$PORT -stun -hostname=$HOSTNAME_ARG
+Restart=always
+LimitNOFILE=65536
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload && systemctl enable --now derper || die "systemd 启动失败"
+fi
+
+sleep 2
+echo
+echo "==> 自检"
+if curl -fsS --max-time 5 "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
+  echo "    ✓ 本地 $PORT 可达"
+else
+  echo "    ! 本地 $PORT 未响应：可能还在起，或端口被占用"
+fi
+echo "    下一步：回面板中继页点「刷新」，状态应为在线；再点「中继地图」导出配置"
+echo "    别忘了云厂商安全组放行 TCP/UDP $PORT"
+`;
+}
+
 export async function api(req, res, url, body) {
   const be = backend();
   const seg = url.pathname.replace(/^\/api\/?/, "").split("/").filter(Boolean);
@@ -348,6 +376,9 @@ export async function api(req, res, url, body) {
     const enabled = body?.enabled ? 1 : 0;
     db.prepare("UPDATE relays SET enabled = ? WHERE id = ?").run(enabled, seg[1]);
     addEvent("relay", `${row.name} ${enabled ? "已启用" : "已从地图摘除"}`);
+    if (enabled && typeof globalThis.__awaProbeRelays === "function") {
+      globalThis.__awaProbeRelays().catch(() => {});
+    }
     return { ok: true };
   }
 
@@ -443,9 +474,18 @@ export async function api(req, res, url, body) {
     db.prepare(`INSERT INTO relays(id,name,region,region_code,addr,port,visibility,quota_gb,used_gb,state,enabled,last_health,demo)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)`)
       .run(id, name, region, region.toLowerCase().replace(/[^a-z0-9]/g, "") || "relay", addr, port,
-        body?.visibility === "private" ? "private" : "public", Number(body?.quotaGb || 0), 0, "online", 1, now());
+        body?.visibility === "private" ? "private" : "public", Number(body?.quotaGb || 0), 0, "pending", 1, null);
     addEvent("relay", `新增中继 ${name}（${addr}:${port}）`);
+    if (typeof globalThis.__awaProbeRelays === "function") {
+      globalThis.__awaProbeRelays().catch(() => {});
+    }
     return { ok: true, id };
+  }
+
+  if (url.pathname === "/api/relays/probe" && method === "POST") {
+    if (typeof globalThis.__awaProbeRelays !== "function") throw new Error("探测未就绪");
+    await globalThis.__awaProbeRelays();
+    return { ok: true, relays: listRelays().map(r => ({ id: r.id, state: r.state, last_health: r.last_health })) };
   }
 
   if (seg[0] === "relays" && seg[2] === "delete" && method === "POST") {

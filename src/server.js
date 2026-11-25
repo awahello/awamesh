@@ -13,6 +13,7 @@ import { backend } from "./backends/index.js";
 import { db, setting } from "./db.js";
 import { wg, setManaged } from "./wgsrv.js";
 import { hostInCidr } from "./wg.js";
+import { tcpProbe } from "./probe.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, "..", "public");
@@ -434,10 +435,28 @@ async function syncWgStatus() {
 }
 
 globalThis.__awaWgRetry = () => wgBoot();
+globalThis.__awaProbeRelays = () => probeRelays();
+
+/** 中继健康检查：TCP 连得上才算在线；状态变化写事件 */
+async function probeRelays() {
+  const rows = db.prepare("SELECT * FROM relays WHERE enabled = 1").all();
+  for (const r of rows) {
+    const res = await tcpProbe(r.addr, r.port || 18444, 3000).catch(() => ({ ok: false, error: "probe-error" }));
+    const state = res.ok ? "online" : "offline";
+    if (r.state !== state) {
+      db.prepare("UPDATE relays SET state = ?, last_health = ? WHERE id = ?").run(state, Math.floor(Date.now() / 1000), r.id);
+      addEvent("relay", `${r.name} ${res.ok ? "已上线（" + res.ms + " ms）" : "不可达（" + (res.error || "超时") + "）"}`);
+    } else {
+      db.prepare("UPDATE relays SET last_health = ? WHERE id = ?").run(Math.floor(Date.now() / 1000), r.id);
+    }
+  }
+}
 
 server.listen(cfg.port, cfg.host, () => {
   log(`awamesh v${cfg.version} 已启动：http://${cfg.host}:${cfg.port}`);
   log(`后端：${cfg.backend} ｜ 网段：${cfg.meshCidr} ｜ 数据目录：${cfg.dataDir}`);
   if (cfg.mode === "tiny") log("tiny 模式：事件保留 " + cfg.eventKeepDays + " 天，健康检查间隔放宽");
   wgBoot();
+  probeRelays().catch(() => {});
+  setInterval(() => probeRelays().catch(() => {}), 60_000).unref();
 });
