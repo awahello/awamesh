@@ -138,6 +138,11 @@ export async function api(req, res, url, body) {
     if (body?.mtu) setting("wg_mtu", String(body.mtu));
     if (body?.dns !== undefined) setting("wg_dns", String(body.dns).trim());
     if (body?.lanRoutes !== undefined) setting("wg_lan_routes", String(body.lanRoutes).trim());
+    if (body?.serverPub) {
+      const pub = String(body.serverPub).trim();
+      if (!/^[A-Za-z0-9+/]{43}=?$/.test(pub)) throw new Error("服务端公钥格式不对（应为 44 字符 base64）");
+      setting("wg_server_pub", pub.endsWith("=") ? pub : pub + "=");
+    }
     if (body?.regen) {
       const { genKeypair } = await import("./wg.js");
       const kp = genKeypair();

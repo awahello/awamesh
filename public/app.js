@@ -417,8 +417,8 @@ async function viewSettings(main) {
         <div class="card-h"><b>WireGuard 服务端</b><span>这些值只写进生成的客户端配置</span></div>
         <label class="dim" style="font-size:11px">Endpoint（公网地址:端口）</label>
         <input id="wgEp" value="${esc(wg.endpoint)}" placeholder="1.2.3.4:51820 或 host.example.com:51820" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
-        <label class="dim" style="font-size:11px">服务端公钥</label>
-        <div class="code" style="margin:4px 0 10px">${esc(wg.serverPub)}</div>
+        <label class="dim" style="font-size:11px">服务端公钥（用你 OpenWrt 上 wg 的真实公钥，或直接用下面生成的）</label>
+        <input id="wgPub" value="${esc(wg.serverPub)}" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);font-family:var(--mono);font-size:12px;margin:4px 0 10px">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <div>
             <label class="dim" style="font-size:11px">Mesh 网段</label>
@@ -442,6 +442,7 @@ async function viewSettings(main) {
   if (wg) {
     const payload = () => ({
       endpoint: main.querySelector("#wgEp").value,
+      serverPub: main.querySelector("#wgPub").value,
       subnet: main.querySelector("#wgSubnet").value,
       mtu: main.querySelector("#wgMtu").value,
       dns: main.querySelector("#wgDns").value,
