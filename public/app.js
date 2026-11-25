@@ -223,6 +223,9 @@ async function viewDevices(main) {
       ${[["all", "全部"], ["online", "在线"], ["relay", "中继"], ["offline", "离线"]].map(([k, l]) =>
         `<button class="btn sm ${S.filter === k ? "primary" : ""}" data-filter="${k}">${l}</button>`).join("")}
     </div>
+    ${d.total === 0 ? `<div class="card" style="margin-bottom:12px;border-color:var(--info)">
+      <b>还没有设备</b><span class="muted"> · 点右上角「添加设备」生成一条授权命令，粘到 OpenWrt / Linux 上以 root 执行即可；四步图解在「设置 → 快速上手」。</span>
+    </div>` : ""}
     <div class="devices">
       <div class="row head"><div>设备</div><div>Mesh 地址</div><div>角色</div><div>路径</div><div>出口地址</div><div>最后在线</div><div></div></div>
       <div class="rows">
@@ -438,6 +441,47 @@ async function viewEvents(main) {
   main.querySelector('[data-act="refresh"]').onclick = renderView;
 }
 
+
+/** 设置页顶部的「快速上手」：按当前状态给下一步，命令可复制 */
+function guideCard(s, wg, cf) {
+  const hasEndpoint = !!(wg && wg.endpoint);
+  const managed = !!(s.wgManaged);
+  const peers = s.wgPeers || 0;
+  const dot = (ok) => `<span class="dot ${ok ? "ok" : "warn"}"></span>`;
+  const cmd = `curl -fsSL '${location.origin}/join.sh?key=<在这里替换成生成的密钥>' | sh -s -- --hostname <设备名>`;
+  return `
+  <div class="card" style="grid-column:1/-1">
+    <div class="card-h"><b>快速上手</b><span>照着四步走，受控端只需要跑一条命令</span></div>
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
+      <div style="padding:10px;border-radius:8px;background:var(--surface-2)">
+        <div style="display:flex;align-items:center;gap:6px;font-weight:500">${dot(hasEndpoint)} 1. 填 Endpoint</div>
+        <div class="dim" style="font-size:11px;margin-top:4px">右边「WireGuard 服务端」填这台机器的公网地址:51820，并在云厂商安全组放行 UDP 51820</div>
+      </div>
+      <div style="padding:10px;border-radius:8px;background:var(--surface-2)">
+        <div style="display:flex;align-items:center;gap:6px;font-weight:500">${dot(managed)} 2. 确认已托管</div>
+        <div class="dim" style="font-size:11px;margin-top:4px">${managed ? "已接管 " + esc(s.wgIface) + "，共 " + peers + " 个对端" : "未托管：容器缺 NET_ADMIN，或内核没有 wireguard 模块（见上方运行信息）"}</div>
+      </div>
+      <div style="padding:10px;border-radius:8px;background:var(--surface-2)">
+        <div style="display:flex;align-items:center;gap:6px;font-weight:500">${dot(peers > 0)} 3. 添加设备</div>
+        <div class="dim" style="font-size:11px;margin-top:4px">去「设备 → 添加设备」生成一次性密钥和命令</div>
+      </div>
+      <div style="padding:10px;border-radius:8px;background:var(--surface-2)">
+        <div style="display:flex;align-items:center;gap:6px;font-weight:500">${dot(cf.tokenSet)} 4. 接 Cloudflare（可选）</div>
+        <div class="dim" style="font-size:11px;margin-top:4px">${cf.tokenSet ? "已配置 Token" : "填只读 Token 后，隧道页能同步真实 ingress"}</div>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <div class="dim" style="font-size:11px">受控端（OpenWrt / Linux，root）要执行的命令长这样：</div>
+      <div class="code">${esc(cmd)}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn sm" id="copyJoin">复制示例命令</button>
+        <button class="btn sm" id="goDevices">去添加设备</button>
+        <button class="btn sm" id="goRelays">去加中继</button>
+        <button class="btn sm" id="goTunnels">去加隧道</button>
+      </div>
+    </div>
+  </div>`;
+}
 /* ---------------- 设置 ---------------- */
 async function viewSettings(main) {
   const s = await api("/api/settings");
@@ -446,6 +490,7 @@ async function viewSettings(main) {
   main.innerHTML = `
     <div class="head"><div><h1>设置</h1><div class="sub">只读信息 + 少量可改项</div></div></div>
     <div class="grid c2e">
+      ${guideCard(s, wg, cf)}
       <div class="card">
         <div class="card-h"><b>运行信息</b></div>
         <div style="display:grid;grid-template-columns:96px 1fr;row-gap:8px;font-size:12px">
@@ -526,6 +571,13 @@ async function viewSettings(main) {
       catch (e) { toast(e.message, true); }
     };
   }
+  main.querySelector("#copyJoin").onclick = async () => {
+    try { await navigator.clipboard.writeText(`curl -fsSL '${location.origin}/join.sh?key=<密钥>' | sh -s -- --hostname <设备名>`); toast("已复制，把 <密钥> 换成生成的 key"); }
+    catch { toast("复制失败，请手动选择", true); }
+  };
+  main.querySelector("#goDevices").onclick = () => { S.view = "devices"; render(); };
+  main.querySelector("#goRelays").onclick = () => { S.view = "relays"; render(); };
+  main.querySelector("#goTunnels").onclick = () => { S.view = "tunnels"; render(); };
   main.querySelector("#saveCf").onclick = async () => {
     try {
       const payload = { account: main.querySelector("#cfAcct").value };
