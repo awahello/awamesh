@@ -629,13 +629,14 @@ function showCode(title, code, hint) {
       </div>
     </div>`;
   document.body.appendChild(mask);
-  const close = () => mask.remove();
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
   mask.querySelector('[data-act="copy"]').onclick = async () => {
     try { await navigator.clipboard.writeText(code); toast("已复制"); }
     catch { toast("复制失败，请手动选择", true); }
   };
-  mask.onclick = (e) => { if (e.target === mask) close(); };
 }
 
 /* ---------------- 添加设备弹层 ---------------- */
@@ -666,9 +667,10 @@ async function openKeyModal() {
       </div>
     </div>`;
   document.body.appendChild(mask);
-  const close = () => mask.remove();
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
-  mask.onclick = (e) => { if (e.target === mask) close(); };
   mask.querySelector('[data-act="gen"]').onclick = async () => {
     try {
       const r = await api("/api/keys", {
@@ -703,9 +705,10 @@ async function openWgCreate() {
       </div>
     </div>`;
   document.body.appendChild(mask);
-  const close = () => mask.remove();
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
-  mask.onclick = (e) => { if (e.target === mask) close(); };
   mask.querySelector('[data-act="gen"]').onclick = async () => {
     try {
       const r = await api("/api/devices", { method: "POST", body: JSON.stringify({ name: mask.querySelector("#wgName").value }) });
@@ -742,9 +745,10 @@ async function openJoinCommand() {
       </div>
     </div>`;
   document.body.appendChild(mask);
-  const close = () => mask.remove();
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
-  mask.onclick = (e) => { if (e.target === mask) close(); };
   mask.querySelector('[data-act="gen"]').onclick = async () => {
     try {
       const r = await api("/api/keys", {
@@ -777,9 +781,10 @@ function openWgSync() {
       </div>
     </div>`;
   document.body.appendChild(mask);
-  const close = () => mask.remove();
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
-  mask.onclick = (e) => { if (e.target === mask) close(); };
   mask.querySelector('[data-act="go"]').onclick = async () => {
     try {
       const r = await api("/api/wg/sync", { method: "POST", body: JSON.stringify({ text: mask.querySelector("#wgText").value }) });
@@ -821,9 +826,10 @@ function openAddRelay() {
       </div>
     </div>`;
   document.body.appendChild(mask);
-  const close = () => mask.remove();
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
-  mask.onclick = (e) => { if (e.target === mask) close(); };
   mask.querySelector('[data-act="ok"]').onclick = async () => {
     try {
       await api("/api/relays", { method: "POST", body: JSON.stringify({
@@ -855,9 +861,10 @@ function openAddTunnel() {
       </div>
     </div>`;
   document.body.appendChild(mask);
-  const close = () => mask.remove();
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
-  mask.onclick = (e) => { if (e.target === mask) close(); };
   mask.querySelector('[data-act="ok"]').onclick = async () => {
     try {
       await api("/api/tunnels", { method: "POST", body: JSON.stringify({
