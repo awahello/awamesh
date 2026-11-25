@@ -136,12 +136,13 @@ async function viewOverview(main) {
   S.data.overview = d;
   main.innerHTML = `
     <div class="head">
-      <div><h1>概览</h1><div class="sub">${d.devices.total} 台设备 · ${d.devices.online} 在线 · ${d.relays} 个中继 · ${d.tunnels.total} 条隧道</div></div>
+      <div><h1>概览</h1><div class="sub">${d.devices.total} 台设备 · ${d.devices.online} 在线 · ${d.relays} 个中继 · ${d.tunnels.total} 条隧道${S.backend === "mock" ? " · 演示数据" : ""}</div></div>
       <div class="head-actions">
         <button class="btn" data-act="refresh">刷新</button>
         <button class="btn primary" data-act="join">添加设备</button>
       </div>
     </div>
+    ${S.backend === "mock" ? `<div class="card" style="margin-bottom:12px;border-color:var(--warn)"><b>当前是演示模式</b><span class="muted"> · 这些设备/中继/隧道都是假数据。把 AWA_BACKEND 改成 wg（管理你自己的 WireGuard）或 headscale（接真实控制面）后重启容器。</span></div>` : ""}
     <div class="grid c4" style="margin-bottom:14px">
       <div class="kpi"><div class="l">在线设备</div><div class="v">${d.devices.online}<small> / ${d.devices.total}</small></div></div>
       <div class="kpi"><div class="l">本月中继流量</div><div class="v">${fmtGb(d.usedGb)}</div></div>
@@ -199,6 +200,7 @@ async function viewDevices(main) {
       <div><h1>设备</h1><div class="sub">${d.total} 台 · ${d.online} 在线 · ${d.relay} 台走中继</div></div>
       <div class="head-actions">
         <input id="q" placeholder="搜索名称 / IP" value="${esc(S.q)}" style="padding:5px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface);width:150px">
+        ${S.backend === "wg" ? `<button class="btn" data-act="sync">同步状态</button>` : ""}
         <button class="btn primary" data-act="join">添加设备</button>
       </div>
     </div>
@@ -215,6 +217,8 @@ async function viewDevices(main) {
   main.querySelector("#q").oninput = (e) => { S.q = e.target.value; clearTimeout(S._qt); S._qt = setTimeout(renderView, 220); };
   main.querySelectorAll("[data-filter]").forEach(b => b.onclick = () => { S.filter = b.dataset.filter; renderView(); });
   main.querySelector('[data-act="join"]').onclick = openKeyModal;
+  const syncBtn2 = main.querySelector('[data-act="sync"]');
+  if (syncBtn2) syncBtn2.onclick = openWgSync;
   main.querySelectorAll("[data-dev]").forEach(b => {
     b.onclick = async () => {
       const id = b.dataset.dev;
@@ -384,6 +388,7 @@ async function viewEvents(main) {
 /* ---------------- 设置 ---------------- */
 async function viewSettings(main) {
   const s = await api("/api/settings");
+  const wg = S.backend === "wg" ? await api("/api/wg/profile") : null;
   main.innerHTML = `
     <div class="head"><div><h1>设置</h1><div class="sub">只读信息 + 少量可改项</div></div></div>
     <div class="grid c2e">
@@ -407,7 +412,51 @@ async function viewSettings(main) {
         <input id="meshDomain" value="${esc(s.meshDomain)}" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
         <button class="btn primary" id="saveNet">保存</button>
       </div>
+      ${wg ? `
+      <div class="card">
+        <div class="card-h"><b>WireGuard 服务端</b><span>这些值只写进生成的客户端配置</span></div>
+        <label class="dim" style="font-size:11px">Endpoint（公网地址:端口）</label>
+        <input id="wgEp" value="${esc(wg.endpoint)}" placeholder="1.2.3.4:51820 或 host.example.com:51820" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+        <label class="dim" style="font-size:11px">服务端公钥</label>
+        <div class="code" style="margin:4px 0 10px">${esc(wg.serverPub)}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <label class="dim" style="font-size:11px">Mesh 网段</label>
+            <input id="wgSubnet" value="${esc(wg.subnet)}" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0">
+          </div>
+          <div>
+            <label class="dim" style="font-size:11px">MTU</label>
+            <input id="wgMtu" value="${wg.mtu}" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0">
+          </div>
+        </div>
+        <label class="dim" style="font-size:11px">DNS（可空）</label>
+        <input id="wgDns" value="${esc(wg.dns)}" placeholder="10.88.0.1 或 1.1.1.1" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+        <label class="dim" style="font-size:11px">额外下发路由（家里 LAN，逗号分隔，可空）</label>
+        <input id="wgLan" value="${esc(wg.lanRoutes)}" placeholder="192.168.1.0/24" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
+        <div style="display:flex;gap:8px">
+          <button class="btn primary" id="saveWg">保存</button>
+          <button class="btn" id="regenWg">重新生成服务端密钥</button>
+        </div>
+      </div>` : ""}
     </div>`;
+  if (wg) {
+    const payload = () => ({
+      endpoint: main.querySelector("#wgEp").value,
+      subnet: main.querySelector("#wgSubnet").value,
+      mtu: main.querySelector("#wgMtu").value,
+      dns: main.querySelector("#wgDns").value,
+      lanRoutes: main.querySelector("#wgLan").value,
+    });
+    main.querySelector("#saveWg").onclick = async () => {
+      try { await api("/api/wg/profile", { method: "POST", body: JSON.stringify(payload()) }); toast("已保存"); renderView(); }
+      catch (e) { toast(e.message, true); }
+    };
+    main.querySelector("#regenWg").onclick = async () => {
+      if (!confirm("重新生成会换掉服务端密钥，已下发的客户端配置全部失效，确定？")) return;
+      try { await api("/api/wg/profile", { method: "POST", body: JSON.stringify({ regen: true }) }); toast("已重新生成"); renderView(); }
+      catch (e) { toast(e.message, true); }
+    };
+  }
   main.querySelector("#saveNet").onclick = async () => {
     try {
       await api("/api/settings", {
@@ -445,6 +494,7 @@ function showCode(title, code, hint) {
 
 /* ---------------- 添加设备弹层 ---------------- */
 async function openKeyModal() {
+  if (S.backend === "wg") return openWgCreate();
   const mask = document.createElement("div");
   mask.className = "mask";
   mask.innerHTML = `
@@ -478,6 +528,71 @@ async function openKeyModal() {
         <div class="code">${esc(cmd)}</div>
         <div class="dim" style="font-size:11px">密钥只显示这一次（${esc(r.tag)}）</div>`;
       mask.querySelector('[data-act="gen"]').textContent = "再生成一个";
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+/* ---------------- wg：真实创建设备 ---------------- */
+async function openWgCreate() {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>添加设备</h3>
+      <div class="sub">生成真实 WireGuard 密钥与地址，产出可直接粘贴的配置（不需要装 Headscale）</div>
+      <label class="dim" style="font-size:11px">设备名</label>
+      <input id="wgName" placeholder="router-home / db-01 / win-laptop" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
+      <div id="wgOut"></div>
+      <div class="modal-actions">
+        <button class="btn" data-act="close">关闭</button>
+        <button class="btn primary" data-act="gen">生成</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.querySelector('[data-act="close"]').onclick = close;
+  mask.onclick = (e) => { if (e.target === mask) close(); };
+  mask.querySelector('[data-act="gen"]').onclick = async () => {
+    try {
+      const r = await api("/api/devices", { method: "POST", body: JSON.stringify({ name: mask.querySelector("#wgName").value }) });
+      mask.querySelector("#wgOut").innerHTML = `
+        <div class="dim" style="font-size:11px">1. 客户端配置（WireGuard App / wg-quick）</div>
+        <div class="code">${esc(r.clientConfig)}</div>
+        <div class="dim" style="font-size:11px">2. 服务端要点（加到 WireGuard 服务端的配置里，然后重启接口）</div>
+        <div class="code">${esc(r.serverPeer)}</div>
+        <div class="dim" style="font-size:11px">3. OpenWrt 的 UCI 写法（/etc/config/network）</div>
+        <div class="code">${esc(r.openwrt)}</div>`;
+      mask.querySelector('[data-act="gen"]').textContent = "再添加一台";
+      toast("已创建，配置只显示这一次");
+      if (S.view === "devices") renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+/* ---------------- wg：导入 wg show 状态 ---------------- */
+function openWgSync() {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>同步真实状态</h3>
+      <div class="sub">在 WireGuard 服务端执行 <span class="mono">wg show</span>，把整段输出粘进来；会按公钥/地址匹配设备并刷新在线与握手时间</div>
+      <textarea id="wgText" rows="10" placeholder="peer: xxxxx&#10;  endpoint: 1.2.3.4:51820&#10;  allowed ips: 10.88.0.2/32&#10;  latest handshake: 42 seconds ago&#10;  transfer: 1.2 MiB received, 3.4 MiB sent" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);font-family:var(--mono);font-size:12px"></textarea>
+      <div class="modal-actions">
+        <button class="btn" data-act="close">关闭</button>
+        <button class="btn primary" data-act="go">导入</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.querySelector('[data-act="close"]').onclick = close;
+  mask.onclick = (e) => { if (e.target === mask) close(); };
+  mask.querySelector('[data-act="go"]').onclick = async () => {
+    try {
+      const r = await api("/api/wg/sync", { method: "POST", body: JSON.stringify({ text: mask.querySelector("#wgText").value }) });
+      toast(`识别 ${r.parsed} 个 peer，匹配 ${r.matched} 台设备`);
+      close();
+      renderView();
     } catch (e) { toast(e.message, true); }
   };
 }

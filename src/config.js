@@ -10,7 +10,7 @@ export const cfg = {
   host: env.AWA_HOST || "0.0.0.0",
   dataDir: path.resolve(env.AWA_DATA_DIR || "./data"),
   mode: (env.AWA_MODE || "full").toLowerCase(), // full | tiny
-  backend: (env.AWA_BACKEND || "mock").toLowerCase(), // mock | headscale
+  backend: (env.AWA_BACKEND || "wg").toLowerCase(), // mock | headscale
   headscaleCmd: env.AWA_HEADSCALE_CMD || "headscale",
   headscaleUser: env.AWA_HEADSCALE_USER || "awamesh",
   meshCidr: env.AWA_MESH_CIDR || "10.88.0.0/24",

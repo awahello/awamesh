@@ -200,7 +200,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-seedIfEmpty();
+if (cfg.backend === "mock") seedIfEmpty();
 ensureAdminCredential();
 if (cfg.backend === "mock") { demoHeartbeat(); setInterval(demoHeartbeat, 30_000).unref(); }
 pruneEvents();

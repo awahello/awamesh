@@ -118,6 +118,45 @@ export async function api(req, res, url, body) {
     };
   }
 
+
+  if (url.pathname === "/api/devices" && method === "POST") {
+    if (typeof be.create !== "function") throw new Error("当前后端不支持直接创建设备（mock 请改用演示数据，或切 AWA_BACKEND=wg）");
+    const r = await be.create(body?.name);
+    return r;
+  }
+
+  if (url.pathname === "/api/wg/profile" && method === "GET") {
+    if (typeof be.profile !== "function") throw new Error("当前后端不是 wg");
+    const { serverPriv, ...rest } = be.profile();
+    return rest;
+  }
+
+  if (url.pathname === "/api/wg/profile" && method === "POST") {
+    if (typeof be.profile !== "function") throw new Error("当前后端不是 wg");
+    if (body?.endpoint !== undefined) setting("wg_endpoint", String(body.endpoint).trim());
+    if (body?.subnet) setting("wg_subnet", String(body.subnet).trim());
+    if (body?.mtu) setting("wg_mtu", String(body.mtu));
+    if (body?.dns !== undefined) setting("wg_dns", String(body.dns).trim());
+    if (body?.lanRoutes !== undefined) setting("wg_lan_routes", String(body.lanRoutes).trim());
+    if (body?.regen) {
+      const { genKeypair } = await import("./wg.js");
+      const kp = genKeypair();
+      setting("wg_server_priv", kp.privateKey);
+      setting("wg_server_pub", kp.publicKey);
+      addEvent("settings", "已重新生成服务端密钥（需同步更新 WireGuard 服务端配置）");
+    } else {
+      addEvent("settings", "WireGuard 服务端参数已更新");
+    }
+    const { serverPriv, ...rest } = be.profile();
+    return rest;
+  }
+
+  if (url.pathname === "/api/wg/sync" && method === "POST") {
+    if (typeof be.sync !== "function") throw new Error("当前后端不是 wg");
+    if (!body?.text) throw new Error("请粘贴 wg show 的输出");
+    return be.sync(body.text);
+  }
+
   if (seg[0] === "devices" && seg[2] === "rename" && method === "POST") {
     await be.rename(seg[1], body?.name);
     return { ok: true };

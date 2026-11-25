@@ -57,7 +57,7 @@ services:
       - AWA_PORT=${PORT}
       - AWA_DATA_DIR=/data
       - AWA_MODE=full
-      - AWA_BACKEND=mock
+      - AWA_BACKEND=${AWA_BACKEND:-wg}
       - TZ=Asia/Shanghai
     volumes:
       - ./data:/data

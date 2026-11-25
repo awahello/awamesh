@@ -42,7 +42,7 @@ services:
     environment:
       - AWA_SECRET=换成一串长随机字符
       - AWA_DATA_DIR=/data
-      - AWA_BACKEND=mock          # 接真实控制面改成 headscale
+      - AWA_BACKEND=wg            # wg=管理你自己的 WireGuard（默认）| mock=演示 | headscale=接控制面
     volumes: ["./data:/data"]
     mem_limit: 192m
     restart: unless-stopped
@@ -90,6 +90,30 @@ docker compose up -d
 或者 1Panel：**容器 → 编排 → 创建编排**，把仓库里 `docker-compose.yml` 的内容整段粘进编辑器（面板的编辑器不会丢换行）。
 
 **镜像架构**：`ghcr.io/awahello/awamesh:latest` 同时提供 `linux/amd64` 与 `linux/arm64`，树莓派/Debian arm64 直接可用。
+
+## 接入真实设备（默认 wg 模式）
+
+**不需要装 Headscale。** 你已有的 WireGuard 服务端（OpenWrt 或一台 VPS）就是数据面，awamesh 负责发密钥、分地址、出配置、对状态。
+
+```
+1) 设置 → WireGuard 服务端   填 Endpoint（公网 IP:端口）、网段、MTU，可选 DNS / 额外路由
+2) 设备 → 添加设备           输入名字，得到三块可直接粘贴的内容
+3) 把 [Peer] 加到服务端      重启接口，客户端导入配置即可
+```
+
+「添加设备」会给出三份东西：
+
+| 内容 | 用在哪 |
+|---|---|
+| 客户端配置 | WireGuard App 扫码/导入，或 `wg-quick` 的 `awa0.conf` |
+| 服务端 `[Peer]` 段 | 追加到 `wg0.conf`（或 `wg set` 命令） |
+| OpenWrt UCI 片段 | `/etc/config/network` 里对应的 `config wireguard_*` 段 |
+
+**看真实在线状态**：在服务端执行 `wg show`，回面板点「同步状态」，把整段输出粘进去 —— 按公钥/地址匹配设备，刷新在线、最近握手、直连标记。
+
+> 服务端公钥由 awamesh 生成（设置页可见）。点「重新生成」会换密钥，已下发的客户端配置全部失效，别乱点。
+>
+> `AWA_BACKEND=mock` 是纯演示数据，界面上会明确标「演示数据」，别拿它当真实状态看。
 
 ## 界面
 
