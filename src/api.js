@@ -1,6 +1,7 @@
 import { cfg } from "./config.js";
 import { db, now, setting, listRelays, listTunnels, listEvents, addEvent } from "./db.js";
 import { backend } from "./backends/index.js";
+import { cfEnabled, listAccounts, listTunnels as cfListTunnels, toRows } from "./cloudflare.js";
 
 const r = (n, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
 
@@ -39,6 +40,52 @@ function groupByTag(devices) {
     }
   }
   return [...map.values()].sort((a, b) => b.total - a.total);
+}
+
+
+/** 生成中继机的部署脚本（derper + systemd），只做打印，不远程执行 */
+function relayScript(relay, cfg) {
+  const port = relay.port || cfg.relayPort;
+  return `#!/bin/sh
+# awamesh 中继节点部署脚本（${relay.region}）
+# 在 ${relay.addr} 这台机器上以 root 执行；需要 Go 1.22+ 或已安装 derper
+set -e
+
+PORT=${port}
+HOSTNAME_ARG="${relay.addr}"
+
+if ! command -v derper >/dev/null 2>&1; then
+  echo "==> 安装 derper（需要 Go）"
+  command -v go >/dev/null 2>&1 || { echo "请先安装 Go 1.22+：https://go.dev/dl/"; exit 1; }
+  go install tailscale.com/cmd/derper@latest
+  cp "$(go env GOPATH)/bin/derper" /usr/local/bin/derper
+fi
+
+echo "==> 写 systemd 单元"
+cat >/etc/systemd/system/derper.service <<EOF
+[Unit]
+Description=awamesh DERP relay
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/derper -a :$PORT -stun -hostname=$HOSTNAME_ARG
+Restart=always
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now derper
+sleep 2
+systemctl --no-pager status derper | head -8
+
+echo
+echo "==> 自检"
+curl -fsS "http://127.0.0.1:$PORT/" >/dev/null && echo "  本地 443 端口可达"
+echo "  下一步：在 awamesh 的「中继节点」页确认状态为在线，地图会自动推送"
+`;
 }
 
 export async function api(req, res, url, body) {
@@ -105,6 +152,43 @@ export async function api(req, res, url, body) {
 
   if (url.pathname === "/api/tunnels" && method === "GET") {
     return { tunnels: listTunnels(), cfEnabled: !!cfg.cfToken };
+  }
+
+
+  if (url.pathname === "/api/tunnels/sync" && method === "POST") {
+    if (!cfEnabled()) throw Object.assign(new Error("未配置 AWA_CF_TOKEN，无法从 Cloudflare 同步"), { status: 400 });
+    const accounts = await listAccounts();
+    const accountId = body?.account || url.searchParams.get("account") || accounts[0]?.id;
+    if (!accountId) throw new Error("没有可用的 Cloudflare 账户（Token 需要 Account:Read）");
+    const items = await cfListTunnels(accountId);
+    const n = toRows(items, db);
+    addEvent("tunnel", `从 Cloudflare 同步 ${n} 条 ingress 记录`);
+    return { ok: true, accountId, count: n };
+  }
+
+  if (url.pathname === "/api/relays/map" && method === "GET") {
+    const list = listRelays().filter(r => r.enabled);
+    const lines = ["regions:"];
+    list.forEach((r, i) => {
+      const id = 900 + i;
+      lines.push(`  ${id}:`);
+      lines.push(`    regionid: ${id}`);
+      lines.push(`    regioncode: ${r.region_code || "r" + id}`);
+      lines.push(`    regionname: ${r.region}`);
+      lines.push(`    nodes:`);
+      lines.push(`      - name: ${id}a`);
+      lines.push(`        regionid: ${id}`);
+      lines.push(`        hostname: ${r.addr}`);
+      lines.push(`        derpport: ${r.port}`);
+      lines.push(`        stunonly: false`);
+    });
+    return { yaml: lines.join("\n") + "\n", count: list.length };
+  }
+
+  if (seg[0] === "relays" && seg[2] === "command" && method === "GET") {
+    const r = db.prepare("SELECT * FROM relays WHERE id = ?").get(seg[1]);
+    if (!r) throw new Error("中继不存在");
+    return { script: relayScript(r, cfg), relay: r };
   }
 
   if (url.pathname === "/api/events" && method === "GET") {

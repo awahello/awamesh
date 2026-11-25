@@ -264,7 +264,10 @@ async function viewRelays(main) {
   main.innerHTML = `
     <div class="head">
       <div><h1>中继节点</h1><div class="sub">${d.relays.filter(r => r.enabled).length} 个已启用 · 中继端口 ${d.relayPort}</div></div>
-      <div class="head-actions"><button class="btn" data-act="refresh">刷新</button></div>
+      <div class="head-actions">
+        <button class="btn" data-act="map">中继地图</button>
+        <button class="btn" data-act="refresh">刷新</button>
+      </div>
     </div>
     <div class="grid c2e">
       ${d.relays.map(r => `
@@ -281,17 +284,29 @@ async function viewRelays(main) {
             <span>${r.state === "online" ? "健康" : r.state}</span>
           </div>
           <div class="bar" style="margin:6px 0 12px"><i style="width:${r.quota_gb ? Math.min(100, Math.round(r.used_gb / r.quota_gb * 100)) : 5}%"></i></div>
-          <div style="display:flex;gap:8px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn sm" data-relay="${esc(r.id)}" data-op="toggle">${r.enabled ? "从地图摘除" : "启用"}</button>
             <button class="btn sm" data-relay="${esc(r.id)}" data-op="vis">${r.visibility === "private" ? "改为公网" : "改为仅内网"}</button>
+            <button class="btn sm" data-relay="${esc(r.id)}" data-op="cmd">接入命令</button>
           </div>
         </div>`).join("")}
     </div>`;
   main.querySelector('[data-act="refresh"]').onclick = renderView;
+  main.querySelector('[data-act="map"]').onclick = async () => {
+    try {
+      const m = await api("/api/relays/map");
+      showCode("中继地图（headscale derp.yaml）", m.yaml, `${m.count} 个中继已写入地图`);
+    } catch (e) { toast(e.message, true); }
+  };
   main.querySelectorAll("[data-relay]").forEach(b => {
     b.onclick = async () => {
       const r = d.relays.find(x => x.id === b.dataset.relay);
       try {
+        if (b.dataset.op === "cmd") {
+          const d2 = await api(`/api/relays/${encodeURIComponent(r.id)}/command`);
+          showCode(`中继接入命令 · ${r.region}`, d2.script, "在目标机器上以 root 执行");
+          return;
+        }
         if (b.dataset.op === "toggle") {
           await api(`/api/relays/${encodeURIComponent(r.id)}/toggle`, { method: "POST", body: JSON.stringify({ enabled: !r.enabled }) });
           toast(r.enabled ? "已从地图摘除" : "已启用");
@@ -312,7 +327,10 @@ async function viewTunnels(main) {
   main.innerHTML = `
     <div class="head">
       <div><h1>Cloudflare 隧道</h1><div class="sub">${d.tunnels.length} 个域名 · ${d.cfEnabled ? "已配置 API Token" : "未配置 API Token（仅本地数据）"}</div></div>
-      <div class="head-actions"><button class="btn" data-act="refresh">刷新</button></div>
+      <div class="head-actions">
+        <button class="btn" data-act="sync" ${d.cfEnabled ? "" : "disabled title='未配置 AWA_CF_TOKEN'"}>从 Cloudflare 同步</button>
+        <button class="btn" data-act="refresh">刷新</button>
+      </div>
     </div>
     <div class="card">
       <div class="rows">
@@ -328,6 +346,20 @@ async function viewTunnels(main) {
       <p class="dim" style="font-size:11px;margin:12px 0 0">v0.1 为只读同步；把 ingress 改指 mesh 地址与回滚在 v0.2 提供。</p>
     </div>`;
   main.querySelector('[data-act="refresh"]').onclick = renderView;
+  const syncBtn = main.querySelector('[data-act="sync"]');
+  if (syncBtn) syncBtn.onclick = async () => {
+    syncBtn.disabled = true;
+    syncBtn.textContent = "同步中…";
+    try {
+      const r = await api("/api/tunnels/sync", { method: "POST", body: "{}" });
+      toast(`已同步 ${r.count} 条记录`);
+      renderView();
+    } catch (e) {
+      toast(e.message, true);
+      syncBtn.disabled = false;
+      syncBtn.textContent = "从 Cloudflare 同步";
+    }
+  };
 }
 
 /* ---------------- 事件 ---------------- */
@@ -385,6 +417,30 @@ async function viewSettings(main) {
       toast("已保存");
     } catch (e) { toast(e.message, true); }
   };
+}
+
+/* ---------------- 通用代码弹层 ---------------- */
+function showCode(title, code, hint) {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>${esc(title)}</h3>
+      <div class="sub">${esc(hint || "")}</div>
+      <div class="code" style="max-height:44vh">${esc(code)}</div>
+      <div class="modal-actions">
+        <button class="btn" data-act="copy">复制</button>
+        <button class="btn primary" data-act="close">关闭</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.querySelector('[data-act="close"]').onclick = close;
+  mask.querySelector('[data-act="copy"]').onclick = async () => {
+    try { await navigator.clipboard.writeText(code); toast("已复制"); }
+    catch { toast("复制失败，请手动选择", true); }
+  };
+  mask.onclick = (e) => { if (e.target === mask) close(); };
 }
 
 /* ---------------- 添加设备弹层 ---------------- */

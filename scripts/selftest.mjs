@@ -86,6 +86,15 @@ try {
   r = await call("/api/relays/r_hk/toggle", { method: "POST", body: JSON.stringify({ enabled: false }) });
   check("中继可摘除", r.status === 200 && r.body.ok, r.text);
 
+  r = await call("/api/relays/map");
+  check("中继地图可导出", r.status === 200 && r.body.yaml.includes("regions:") && r.body.count >= 1, r.text.slice(0, 80));
+
+  r = await call("/api/relays/r_hk/command");
+  check("中继接入命令", r.status === 200 && r.body.script.includes("derper"), r.text.slice(0, 80));
+
+  r = await call("/api/tunnels/sync", { method: "POST", body: "{}" });
+  check("未配 Token 时同步给出明确报错", r.status === 400 && /AWA_CF_TOKEN/.test(r.body.error || ""), r.text.slice(0, 80));
+
   r = await call("/api/tunnels");
   check("隧道列表", r.status === 200 && r.body.tunnels.length >= 4, JSON.stringify(r.body).slice(0, 100));
 
