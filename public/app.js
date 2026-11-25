@@ -363,6 +363,11 @@ async function viewTunnels(main) {
         <button class="btn primary" data-act="add">添加隧道</button>
       </div>
     </div>
+    ${d.cfEnabled ? "" : `<div class="card" style="margin-bottom:12px;border-color:var(--info)">
+      <b>还没连接 Cloudflare</b>
+      <span class="muted"> · 去「设置」填一个只读 API Token，就能把真实的隧道与 ingress 拉到这里；现在只能手工登记域名。</span>
+      <div style="margin-top:8px"><button class="btn" data-act="goSettings">去设置填写</button></div>
+    </div>`}
     <div class="card">
       <div class="rows">
         <div class="row head" style="grid-template-columns:2fr 1.4fr 0.8fr 0.8fr 0.6fr"><div>域名</div><div>后端</div><div>状态</div><div>检查</div><div></div></div>
@@ -379,6 +384,8 @@ async function viewTunnels(main) {
     </div>`;
   main.querySelector('[data-act="refresh"]').onclick = renderView;
   main.querySelector('[data-act="add"]').onclick = openAddTunnel;
+  const go = main.querySelector('[data-act="goSettings"]');
+  if (go) go.onclick = () => { S.view = "settings"; render(); };
   main.querySelectorAll("[data-tun]").forEach(b => {
     b.onclick = async () => {
       if (!confirm("删除这条隧道记录？不影响 Cloudflare 上真实的隧道。")) return;
@@ -426,6 +433,7 @@ async function viewEvents(main) {
 async function viewSettings(main) {
   const s = await api("/api/settings");
   const wg = S.backend === "wg" ? await api("/api/wg/profile") : null;
+  const cf = await api("/api/cf/profile").catch(() => ({ enabled: false, tokenSet: false, account: "" }));
   main.innerHTML = `
     <div class="head"><div><h1>设置</h1><div class="sub">只读信息 + 少量可改项</div></div></div>
     <div class="grid c2e">
@@ -448,6 +456,19 @@ async function viewSettings(main) {
         <label class="dim" style="font-size:11px">Mesh 域名后缀</label>
         <input id="meshDomain" value="${esc(s.meshDomain)}" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
         <button class="btn primary" id="saveNet">保存</button>
+      </div>
+      <div class="card">
+        <div class="card-h"><b>Cloudflare</b><span>${cf.tokenSet ? "已配置 " + esc(cf.tokenHint) : "未配置"}</span></div>
+        <label class="dim" style="font-size:11px">API Token（需要 Account:Tunnel:Read + Zone.DNS:Read；加密存储在本地库）</label>
+        <input id="cfToken" placeholder="粘贴 Token，留空表示不修改" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+        <label class="dim" style="font-size:11px">Account ID（可留空，测试连接后自动填）</label>
+        <input id="cfAcct" value="${esc(cf.account)}" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn primary" id="saveCf">保存</button>
+          <button class="btn" id="testCf">测试连接</button>
+          <button class="btn danger" id="clearCf">清除 Token</button>
+        </div>
+        <p class="dim" style="font-size:11px;margin:10px 0 0">权限只读即可；要用「改指 mesh」才需要 Edit，v0.2 再开。</p>
       </div>
       ${wg ? `
       <div class="card">
@@ -495,6 +516,27 @@ async function viewSettings(main) {
       catch (e) { toast(e.message, true); }
     };
   }
+  main.querySelector("#saveCf").onclick = async () => {
+    try {
+      const payload = { account: main.querySelector("#cfAcct").value };
+      const t = main.querySelector("#cfToken").value.trim();
+      if (t) payload.token = t;
+      await api("/api/cf/profile", { method: "POST", body: JSON.stringify(payload) });
+      toast("已保存"); renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#testCf").onclick = async () => {
+    try {
+      const r = await api("/api/cf/test", { method: "POST", body: "{}" });
+      toast(`连接正常，${r.accounts.length} 个账户：${r.accounts.map(a => a.name).join(" / ")}`);
+      renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#clearCf").onclick = async () => {
+    if (!confirm("清除本地保存的 Token？")) return;
+    await api("/api/cf/profile", { method: "POST", body: JSON.stringify({ token: "" }) });
+    toast("已清除"); renderView();
+  };
   main.querySelector("#saveNet").onclick = async () => {
     try {
       await api("/api/settings", {

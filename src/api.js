@@ -1,7 +1,7 @@
 import { cfg } from "./config.js";
 import { db, now, setting, listRelays, listTunnels, listEvents, addEvent } from "./db.js";
 import { backend } from "./backends/index.js";
-import { cfEnabled, listAccounts, listTunnels as cfListTunnels, toRows } from "./cloudflare.js";
+import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, listTunnels as cfListTunnels, toRows } from "./cloudflare.js";
 import crypto from "node:crypto";
 import { wg, isManaged } from "./wgsrv.js";
 import { hostInCidr } from "./wg.js";
@@ -352,10 +352,39 @@ export async function api(req, res, url, body) {
   }
 
 
+
+  if (url.pathname === "/api/cf/profile" && method === "GET") {
+    return {
+      enabled: cfEnabled(),
+      tokenSet: !!cfToken(),
+      tokenHint: cfToken() ? cfToken().slice(0, 4) + "…" + cfToken().slice(-4) : "",
+      account: cfAccount(),
+    };
+  }
+
+  if (url.pathname === "/api/cf/profile" && method === "POST") {
+    if (body?.token !== undefined) {
+      const t = String(body.token).trim();
+      if (t && !/^[A-Za-z0-9_-]{20,}$/.test(t)) throw new Error("Token 看起来不对（应是一串不含空格的字符）");
+      setCfToken(t);
+      addEvent("settings", t ? "Cloudflare Token 已更新" : "Cloudflare Token 已清除");
+    }
+    if (body?.account !== undefined) setCfAccount(String(body.account).trim());
+    return { ok: true, enabled: cfEnabled(), account: cfAccount() };
+  }
+
+  if (url.pathname === "/api/cf/test" && method === "POST") {
+    if (!cfEnabled()) throw new Error("还没填 Token");
+    const accounts = await listAccounts();
+    if (accounts[0] && !cfAccount()) setCfAccount(accounts[0].id);
+    addEvent("settings", `Cloudflare 连接正常（${accounts.length} 个账户）`);
+    return { ok: true, accounts: accounts.map(a => ({ id: a.id, name: a.name })) };
+  }
+
   if (url.pathname === "/api/tunnels/sync" && method === "POST") {
     if (!cfEnabled()) throw Object.assign(new Error("未配置 AWA_CF_TOKEN，无法从 Cloudflare 同步"), { status: 400 });
     const accounts = await listAccounts();
-    const accountId = body?.account || url.searchParams.get("account") || accounts[0]?.id;
+    const accountId = body?.account || url.searchParams.get("account") || cfAccount() || accounts[0]?.id;
     if (!accountId) throw new Error("没有可用的 Cloudflare 账户（Token 需要 Account:Read）");
     const items = await cfListTunnels(accountId);
     const n = toRows(items, db);

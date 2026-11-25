@@ -192,14 +192,13 @@ curl -fsS http://127.0.0.1:18444/ >/dev/null && echo "中继本地可达"
 
 **1）面板 → Cloudflare 隧道 → 添加隧道**：填域名 + 后端（如 `10.88.0.5:5000`）。这一步只是登记，便于和 Cloudflare 上的配置对照。
 
-**2）要和 Cloudflare 真实同步**：给容器加只读 Token
+**2）要和 Cloudflare 真实同步**：设置 → Cloudflare，粘贴只读 Token（加密存本地库，面板里也能清除）
 
-```yaml
-    environment:
-      - AWA_CF_TOKEN=你的token      # 权限：Account.Tunnel:Read + Zone.DNS:Read
+```
+权限只需：Account:Tunnel:Read + Zone.DNS:Read
 ```
 
-重启后点「从 Cloudflare 同步」，会拉隧道、连接器状态与 ingress 规则落库。
+保存后点「测试连接」会列出你的账户；再回隧道页点「从 Cloudflare 同步」，会拉隧道、连接器状态与 ingress 规则落库。
 
 **3）把 Cloudflare 的 ingress 指到 mesh**（手工，v0.2 做成按钮）：
 

@@ -1,18 +1,37 @@
 import { cfg } from "./config.js";
+import { secretSetting, saveSecretSetting } from "./secrets.js";
+import { setting } from "./db.js";
 
 const API = "https://api.cloudflare.com/client/v4";
 
-/** Cloudflare 只在配置了 Token 时启用；所有调用都走同一层错误处理 */
+/** Token 可以写在环境变量，也可以在面板里填（加密存库） */
+export function cfToken() {
+  return secretSetting("cf_token", cfg.cfToken);
+}
+
+export function setCfToken(token) {
+  saveSecretSetting("cf_token", token || "");
+}
+
+export function cfAccount() {
+  return setting("cf_account") || "";
+}
+
+export function setCfAccount(id) {
+  setting("cf_account", id || "");
+}
+
 export function cfEnabled() {
-  return !!cfg.cfToken;
+  return !!cfToken();
 }
 
 async function cf(path, init = {}) {
-  if (!cfg.cfToken) throw Object.assign(new Error("未配置 AWA_CF_TOKEN"), { status: 400 });
+  const token = cfToken();
+  if (!token) throw Object.assign(new Error("还没填 Cloudflare API Token（设置 → Cloudflare）"), { status: 400 });
   const res = await fetch(API + path, {
     ...init,
     headers: {
-      Authorization: "Bearer " + cfg.cfToken,
+      Authorization: "Bearer " + token,
       "Content-Type": "application/json",
       ...(init.headers || {}),
     },

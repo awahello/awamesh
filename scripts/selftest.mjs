@@ -98,6 +98,15 @@ try {
   r = await call("/api/tunnels");
   check("隧道列表", r.status === 200 && r.body.tunnels.length >= 4, JSON.stringify(r.body).slice(0, 100));
 
+  r = await call("/api/cf/profile");
+  check("Cloudflare 配置可见", r.status === 200 && r.body.enabled === false, r.text.slice(0, 80));
+
+  r = await call("/api/cf/profile", { method: "POST", body: JSON.stringify({ token: "fake-token-for-selftest-123456" }) });
+  check("可保存 Cloudflare Token", r.status === 200 && r.body.enabled === true, r.text.slice(0, 80));
+
+  r = await call("/api/cf/profile");
+  check("Token 回显做掩码", r.status === 200 && r.body.tokenHint.includes("…"), r.body.tokenHint);
+
   r = await call("/api/settings");
   check("设置只读信息", r.status === 200 && r.body.version, r.text.slice(0, 80));
 
