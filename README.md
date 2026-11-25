@@ -222,6 +222,49 @@ ingress:
 
 ---
 
+## 更新（升级到新版本）
+
+镜像 tag 固定是 `latest`，**`docker compose up -d` 不会自动换镜像**，必须显式 `pull`：
+
+```bash
+cd /opt/awamesh
+tar czf backup-$(date +%F).tgz data        # 先备份：配置、密钥、首次口令都在 data/
+docker compose pull
+docker compose up -d --force-recreate
+curl -s localhost:18443/api/health         # 确认版本，例如 {"ok":true,"version":"0.2.0"}
+```
+
+三条命令跑完还是旧版（`version` 没变）？按顺序清一遍：
+
+```bash
+docker compose down
+docker image rm -f ghcr.io/awahello/awamesh:latest
+docker compose pull && docker compose up -d
+curl -s localhost:18443/api/health
+```
+
+页面还是旧界面？静态资源带 `?v=版本号`，正常刷新就行；顽固的话 `Ctrl+Shift+R` 强刷或开无痕。左下角显示的 `v0.2.0` 是最直接的判据。
+
+**中继节点单独更新**（那台如果是用 Docker 跑 derper）：
+
+```bash
+docker pull ghcr.io/awahello/awamesh-relay:latest
+docker rm -f awamesh-derp
+docker run -d --name awamesh-derp --restart unless-stopped \
+  -p 18444:18444 -p 18444:18444/udp --entrypoint derper \
+  ghcr.io/awahello/awamesh-relay:latest -a :18444 -stun -hostname 你的中继域名
+```
+
+更新须知：
+
+| 事项 | 说明 |
+|---|---|
+| 数据安全 | 全部在 `./data`（SQLite + 服务端密钥 + 首次口令），换镜像不影响；备份就是打包这个目录 |
+| `AWA_SECRET` | **更新时不要顺手改它** —— 改了会让已保存的 Cloudflare Token 解不开，需要重填 |
+| 端口变更 | 若新版本改了默认端口，`ports` 与 `AWA_PORT` 要同时改（默认 18443 / 中继 18444） |
+| 权限 | compose 里的 `cap_add: [NET_ADMIN, SYS_MODULE]` 别丢，丢了会退回"手动配置"模式 |
+| 回滚 | 备份的 `data/` 解回原处 + 用旧版本镜像 tag 起容器即可 |
+
 ## 命令速查
 
 **部署与运维**
@@ -293,6 +336,8 @@ docker compose logs --tail 50 awamesh
 | `EACCES` 或「数据目录不可写」 | 宿主机 `./data` 属主 root，容器以 `node`(1000) 运行 | `sudo chown -R 1000:1000 ./data` |
 | 「AWA_DATA_DIR 含换行或制表符」 | 终端粘贴 heredoc 丢换行，两行环境变量粘成一行 | 重写 compose，或用 1Panel 编辑器 |
 | `EADDRINUSE` | 18443 被占用 | 同时改 `ports` 与 `AWA_PORT` |
+| `[wg] 接管失败：Operation not permitted` | 容器缺 `NET_ADMIN`，或宿主机没加载 wireguard 模块 | compose 补 `cap_add: [NET_ADMIN, SYS_MODULE]`；宿主机 `modprobe wireguard` |
+| 更新后版本号没变 | tag 是 `latest`，`up -d` 不会自动换镜像 | 见「更新」章节的三条命令 |
 
 **看到的还是演示数据**：检查 compose 里是否还写着 `AWA_BACKEND=mock`，改成 `wg` 后 `up -d --force-recreate`。
 
