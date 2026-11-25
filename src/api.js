@@ -136,6 +136,16 @@ export async function joinPeer(body) {
     .run(id, "", publicKey, address, t);
   db.prepare("UPDATE authkeys SET used_at = ? WHERE id = ?").run(t, row.id);
 
+  // 节点上报的公网 endpoint（有则记下，用于全网状直连）
+  const selfEndpoint = String(body?.endpoint || "").trim().slice(0, 120);
+  const wgPort = Number(body?.port || 0) || null;
+  const nodeToken = "nt_" + crypto.randomBytes(16).toString("hex");
+  if (selfEndpoint) {
+    db.prepare("UPDATE devices SET endpoint = ?, wg_port = ? WHERE id = ?").run(selfEndpoint, wgPort, id);
+  }
+  db.prepare("UPDATE devices SET node_token = ? WHERE id = ?")
+    .run(crypto.createHash("SHA256").update(nodeToken).digest("hex"), id);
+
   // Endpoint 没填时，用请求 Host 兜底推导（面板域名/IP + wg 端口）
   let endpoint = pf.endpoint || "";
   if (!endpoint && body?._host) {
@@ -148,6 +158,7 @@ export async function joinPeer(body) {
   if (isManaged()) {
     try {
       await wg.addPeer(publicKey, address);
+      if (selfEndpoint) await wg.sh("wg", ["set", wg.iface, "peer", publicKey, "endpoint", selfEndpoint]);
       applied = true;
     } catch (e) {
       addEvent("device", `加 peer 失败（${e.message}），已下发配置，需在服务端手动补一条`, id);
@@ -164,7 +175,47 @@ export async function joinPeer(body) {
     dns: pf.dns || "",
     allowedIps: [subnet, ...(pf.lanRoutes ? pf.lanRoutes.split(",").map(x => x.trim()).filter(Boolean) : [])].join(","),
     applied,
+    nodeToken,
   };
+}
+
+
+/** 节点用 nodeToken 拉取全网 peer 列表，用于打全直连 */
+export function peersForNode(nodeToken) {
+  const hash = crypto.createHash("SHA256").update(String(nodeToken || "")).digest("hex");
+  const self = db.prepare("SELECT * FROM devices d WHERE d.node_token = ?").get(hash);
+  if (!self) throw Object.assign(new Error("节点凭据无效"), { status: 401 });
+
+  const rows = db.prepare(`
+    SELECT d.id, d.name, d.mesh_ip, d.endpoint, d.wg_port, p.public_key
+    FROM devices d JOIN wg_peers p ON p.device_id = d.id
+    WHERE d.revoked_at IS NULL`).all();
+
+  const peers = rows
+    .filter(r => r.id !== self.id)
+    .map(r => ({
+      name: r.name,
+      address: r.mesh_ip,
+      publicKey: r.public_key,
+      // 有公网 endpoint 的才给直连信息，其余由 hub 兜底
+      endpoint: r.endpoint ? (r.endpoint.includes(":") ? r.endpoint : `${r.endpoint}:${r.wg_port || 51820}`) : "",
+    }));
+
+  return {
+    self: { name: self.name, address: self.mesh_ip, endpoint: self.endpoint || "" },
+    peers,
+  };
+}
+
+/** 节点每次刷新时顺带上报自己的 endpoint（公网 IP 可能变） */
+export function updateNodeEndpoint(nodeToken, endpoint, port) {
+  const hash = crypto.createHash("SHA256").update(String(nodeToken || "")).digest("hex");
+  const self = db.prepare("SELECT * FROM devices WHERE node_token = ?").get(hash);
+  if (!self) throw Object.assign(new Error("节点凭据无效"), { status: 401 });
+  const ep = String(endpoint || "").trim().slice(0, 120);
+  if (!ep) return { ok: true, changed: false };
+  db.prepare("UPDATE devices SET endpoint = ?, wg_port = ? WHERE id = ?").run(ep, Number(port) || null, self.id);
+  return { ok: true, changed: self.endpoint !== ep };
 }
 
 export async function api(req, res, url, body) {

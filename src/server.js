@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cfg, log } from "./config.js";
-import { api, joinPeer } from "./api.js";
+import { api, joinPeer, peersForNode, updateNodeEndpoint } from "./api.js";
 import { seedIfEmpty, pruneEvents, addEvent, demoHeartbeat, clearDemo } from "./db.js";
 import {
   ensureAdminCredential, verifyCredential, sessionToken, validSession,
@@ -102,10 +102,17 @@ umask 077
 [ -f /etc/wireguard/$IFACE.key ] || wg genkey > /etc/wireguard/$IFACE.key
 PUB="$(wg pubkey < /etc/wireguard/$IFACE.key)"
 
+echo "==> 2.5/4 探测公网地址（有公网 IP 才能和别的节点直连）"
+PUBIP="$(curl -fsS --max-time 6 https://api.ipify.org 2>/dev/null || curl -fsS --max-time 6 https://ifconfig.me 2>/dev/null || true)"
+WGPORT="$(wg show "$IFACE" listen-port 2>/dev/null || echo 51820)"
+ENDPOINT=""
+[ -n "$PUBIP" ] && ENDPOINT="$PUBIP:$WGPORT"
+if [ -n "$ENDPOINT" ]; then echo "    公网地址 $ENDPOINT（可直连）"; else echo "    未探测到公网地址，走控制台兜底"; fi
+
 echo "==> 3/4 向控制台申请地址"
 RESP="$(curl -fsS -X POST "$SERVER/api/join?format=shell" \
   -H 'Content-Type: application/json' \
-  -d "{\"token\":\"$KEY\",\"pubkey\":\"$PUB\",\"hostname\":\"$HOST\"}")" || {
+  -d "{\"token\":\"$KEY\",\"pubkey\":\"$PUB\",\"hostname\":\"$HOST\",\"endpoint\":\"$ENDPOINT\",\"port\":$WGPORT}")" || {
   echo "    申请失败，通常是密钥已被使用或过期：$RESP"; exit 1; }
 
 for kv in $RESP; do
@@ -118,6 +125,7 @@ for kv in $RESP; do
     MTU) MTU="$v" ;;
     DNS) DNSV="$v" ;;
     ALLOWED) ALLOWED="$v" ;;
+    NODETOKEN) NODETOKEN="$v" ;;
   esac
 done
 
@@ -150,6 +158,60 @@ else
   ip addr add "$ADDR/$PREFIX" dev "$IFACE" 2>/dev/null || true
   ip link set mtu \${MTU:-1420} up dev "$IFACE"
   wg set "$IFACE" private-key /etc/wireguard/$IFACE.key peer "$SERVERPUB" endpoint "$ENDPOINT" allowed-ips "$ALLOWED" persistent-keepalive 25
+fi
+
+echo "==> 4.5/4 安装全网状刷新（每 60 秒同步一次对端表）"
+if [ -n "\${NODETOKEN:-}" ]; then
+  printf '%s' "$NODETOKEN" > /etc/wireguard/awa.token
+  chmod 600 /etc/wireguard/awa.token
+  cat > /usr/local/bin/awa-peers <<PEERS
+#!/bin/sh
+SERVER="$SERVER"; IFACE="$IFACE"; TOKEN="\$(cat /etc/wireguard/awa.token)"
+PUBIP="\$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+[ -n "\$PUBIP" ] && curl -fsS -X POST "\$SERVER/api/join/hit" \
+  -H "Authorization: Bearer \$TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"endpoint\":\"\$PUBIP:$(wg show \$IFACE listen-port 2>/dev/null || echo 51820)\"}" >/dev/null 2>&1 || true
+curl -fsS -H "Authorization: Bearer \$TOKEN" "\$SERVER/api/join/peers?format=shell" \
+  | while read -r kind pub addr ep name; do
+      [ "\$kind" = "PEER" ] || continue
+      if [ "\$ep" != "-" ]; then
+        wg set "\$IFACE" peer "\$pub" allowed-ips "\$addr" endpoint "\$ep" persistent-keepalive 25
+      else
+        wg set "\$IFACE" peer "\$pub" allowed-ips "\$addr" persistent-keepalive 25
+      fi
+    done
+PEERS
+  chmod +x /usr/local/bin/awa-peers
+
+  if command -v systemctl >/dev/null 2>&1; then
+    cat >/etc/systemd/system/awa-peers.service <<'EOF'
+[Unit]
+Description=awamesh mesh peer refresh
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/awa-peers
+EOF
+    cat >/etc/systemd/system/awa-peers.timer <<'EOF'
+[Unit]
+Description=awamesh mesh peer refresh timer
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now awa-peers.timer >/dev/null 2>&1 || true
+    /usr/local/bin/awa-peers || true
+    echo "    已安装 awa-peers.timer（每 60 秒）"
+  else
+    (crontab -l 2>/dev/null | grep -v awa-peers; echo "*/1 * * * * /usr/local/bin/awa-peers >/dev/null 2>&1") | crontab -
+    /usr/local/bin/awa-peers || true
+    echo "    已写入 crontab（每分钟）"
+  fi
+else
+  echo "    控制台未返回节点凭据，跳过（只走 hub）"
 fi
 
 sleep 1
@@ -217,11 +279,29 @@ const server = http.createServer(async (req, res) => {
         const lines = [
           `ADDRESS=${r.address}`, `PREFIX=${r.prefix}`, `SERVERPUB=${r.serverPub}`,
           `ENDPOINT=${r.endpoint}`, `MTU=${r.mtu}`, `DNS=${r.dns}`, `ALLOWED=${r.allowedIps}`,
+          `NODETOKEN=${r.nodeToken || ""}`,
         ];
         res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
         return res.end(lines.join("\n") + "\n");
       }
       return json(res, 200, r);
+    }
+
+    if (p === "/api/join/peers" && req.method === "GET") {
+      const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      const data = peersForNode(token);
+      if (url.searchParams.get("format") === "shell") {
+        const lines = data.peers.map(x => `PEER ${x.publicKey} ${x.address}/32 ${x.endpoint || "-"} ${x.name}`);
+        res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+        return res.end(lines.join("\n") + "\n");
+      }
+      return json(res, 200, data);
+    }
+
+    if (p === "/api/join/hit" && req.method === "POST") {
+      const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      const body = await readBody(req);
+      return json(res, 200, updateNodeEndpoint(token, body?.endpoint, body?.port));
     }
 
     if (p === "/join.sh") {

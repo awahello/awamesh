@@ -77,6 +77,11 @@ CREATE TABLE IF NOT EXISTS authkeys (
 );
 `);
 
+// 迁移：P2P 相关字段（节点上报的公网 endpoint 与刷新凭据）
+try { db.exec("ALTER TABLE devices ADD COLUMN endpoint TEXT"); } catch {}
+try { db.exec("ALTER TABLE devices ADD COLUMN wg_port INTEGER"); } catch {}
+try { db.exec("ALTER TABLE devices ADD COLUMN node_token TEXT"); } catch {}
+
 // 迁移：给演示数据打标记，切到真实后端时自动清掉
 for (const t of ["devices", "relays", "tunnels"]) {
   try { db.exec(`ALTER TABLE ${t} ADD COLUMN demo INTEGER DEFAULT 0`); } catch { /* 已存在 */ }
