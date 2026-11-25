@@ -292,8 +292,11 @@ export async function api(req, res, url, body) {
     } else {
       addEvent("settings", "WireGuard 服务端参数已更新");
     }
+    if (typeof globalThis.__awaWgRetry === "function") {
+      try { await globalThis.__awaWgRetry(); } catch (e) { addEvent("settings", "重试接管 WireGuard 失败：" + e.message); }
+    }
     const { serverPriv, ...rest } = be.profile();
-    return rest;
+    return { ...rest, managed: isManaged() };
   }
 
   if (url.pathname === "/api/wg/sync" && method === "POST") {
@@ -498,6 +501,9 @@ export async function api(req, res, url, body) {
       controlUrl: cfg.controlUrl,
       relayPort: cfg.relayPort,
       dataDir: cfg.dataDir,
+      wgManaged: isManaged(),
+      wgIface: wg.iface,
+      wgPeers: db.prepare("SELECT COUNT(*) c FROM wg_peers").get().c,
     };
   }
 

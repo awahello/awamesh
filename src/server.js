@@ -353,6 +353,15 @@ setInterval(pruneEvents, 6 * 3600 * 1000).unref();
 // wg 模式：托管本机 WireGuard 接口，并定时读取真实状态
 async function wgBoot() {
   if (cfg.backend !== "wg") return;
+
+  // 先确保服务端密钥存在，否则会以"还没有服务端密钥"失败
+  if (!setting("wg_server_priv")) {
+    const { genKeypair } = await import("./wg.js");
+    const kp = genKeypair();
+    setting("wg_server_priv", kp.privateKey);
+    setting("wg_server_pub", kp.publicKey);
+    log("[wg] 已生成服务端密钥");
+  }
   _wgOn = await wg.available();
   if (!_wgOn) {
     log("[wg] 容器里没有 wg 命令，保持“手动复制配置”模式（compose 加 cap_add: NET_ADMIN 并装 wireguard-tools 可自动接管）");
@@ -418,6 +427,8 @@ async function syncWgStatus() {
     log("[wg] 状态同步失败：" + e.message);
   }
 }
+
+globalThis.__awaWgRetry = () => wgBoot();
 
 server.listen(cfg.port, cfg.host, () => {
   log(`awamesh v${cfg.version} 已启动：http://${cfg.host}:${cfg.port}`);

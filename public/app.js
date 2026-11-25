@@ -456,6 +456,7 @@ async function viewSettings(main) {
           <div class="dim">中继端口</div><div class="mono">${s.relayPort}</div>
           <div class="dim">数据目录</div><div class="mono">${esc(s.dataDir)}</div>
           <div class="dim">控制面地址</div><div class="mono">${esc(s.controlUrl || "未设置")}</div>
+          <div class="dim">WireGuard</div><div>${s.wgManaged ? `已托管 · ${esc(s.wgIface)} · ${s.wgPeers} 个对端` : `<span style="color:var(--warn)">未托管（手动模式）</span>`}</div>
         </div>
       </div>
       <div class="card">
