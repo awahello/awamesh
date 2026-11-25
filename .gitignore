@@ -7,3 +7,6 @@ cookies.txt
 .gh-token
 data*/
 data*/
+cw*.txt
+cookies*.txt
+.gh-*.json
