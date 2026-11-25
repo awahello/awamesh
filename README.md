@@ -134,32 +134,75 @@ awamesh 不接管你已有的东西，只做增量：
 
 ## 架构
 
-```
-        ┌───────────────┐        ┌────────────────┐
-        │  浏览器（面板）│───────▶│ awamesh 控制台 │
-        └───────────────┘  HTTP  │  Node + SQLite │
-                                 └───────┬────────┘
-                                         │ CLI / 适配层
-                                 ┌───────▼────────┐
-                                 │   Headscale    │  控制面（设备注册、密钥、路由批准）
-                                 └───────┬────────┘
-                     ┌───────────────────┼───────────────────┐
-                     │                   │                   │
-              ┌──────▼─────┐      ┌──────▼─────┐      ┌──────▼─────┐
-              │ router-home│◀────▶│  seoul-vps │◀────▶│  win-laptop│
-              │  OpenWrt   │ WG   │ 中继 + 节点 │ WG   │  Windows   │
-              └──────┬─────┘      └────────────┘      └────────────┘
-                     │ cloudflared
-              ┌──────▼─────┐
-              │ Cloudflare │  blog.akkdiy.cn / rule.akkdiy.cn
-              └────────────┘
+```mermaid
+flowchart TB
+  B["浏览器（面板）"]
+
+  subgraph CTL["控制台（1 台：VPS 或 NAS）"]
+    A["awamesh<br/>Node 22 + SQLite<br/>面板 / 编排 / 观测"]
+    H["Headscale<br/>设备注册 · 密钥 · 路由批准"]
+    A -->|"CLI / 适配层"| H
+  end
+
+  subgraph LNX["Linux 机队（N 台 VPS）"]
+    S1["seoul-vps<br/>节点 + 中继"]
+    S2["hk-edge<br/>节点 + 中继"]
+    S3["db-01<br/>节点"]
+    S4["其它 Linux<br/>节点 / 网段网关 / 出口"]
+  end
+
+  subgraph HOME["家里（大陆）"]
+    R["router-home · OpenWrt<br/>节点 + 子网网关<br/>192.168.1.0/24"]
+  end
+
+  W["win-laptop · Windows<br/>节点"]
+
+  subgraph CF["Cloudflare"]
+    E["边缘 / DNS<br/>TLS 终止 · CDN"]
+    T1["隧道 · blog.akkdiy.cn"]
+    T2["隧道 · rule.akkdiy.cn"]
+  end
+
+  B -->|HTTPS| A
+  A -.->|"只读同步：隧道 / ingress"| CF
+
+  H ---|下发密钥与中继地图| S1
+  H ---|下发密钥与中继地图| S2
+  H ---|下发密钥与中继地图| S3
+  H ---|下发密钥与中继地图| R
+  H ---|下发密钥与中继地图| W
+
+  R <-->|"WG 直连（P2P）"| S1
+  R <-->|"WG 直连"| S2
+  R <-->|"WG 直连"| W
+  S3 -.->|"打洞失败 → 中继"| S1
+  S4 -.->|"打洞失败 → 中继"| S2
+
+  R ---|cloudflared| T1
+  R ---|cloudflared| T2
+  T1 --- E
+  T2 --- E
+  E --- 访客["公网访客"]
 ```
 
-- 数据面：WireGuard（端到端加密，打洞成功则不经服务器）
-- 中继：DERP（HTTPS/443），打洞失败时自动回退
-- 控制台只做编排与观测，不转发用户流量
+**三种角色，一台机器可以叠加**
 
----
+| 角色 | 谁承担（示例） | 作用 |
+|---|---|---|
+| 节点 node | 所有设备 | 拿到 `10.88.0.x`，彼此互通 |
+| 中继 relay | seoul-vps、hk-edge、家宽 | 打洞失败时转发（DERP，走 443/8443，穿墙最稳） |
+| 网段网关 gateway | router-home、任意一台 Linux | `--advertise-routes` 把所在 LAN 发布进 Mesh |
+| 出口 exit | 任意一台 | 作为全流量出口，客户端自选 |
+
+**Cloudflare 在这里的三重身份**
+
+| 身份 | 说明 |
+|---|---|
+| 公网发布 | 家里/机房的 `cloudflared` 出站连到 CF，把内网服务映射成域名，不需要公网 IP、不开入站 |
+| DNS / TLS / CDN | 域名解析、证书、静态资源缓存都在 CF 侧 |
+| 观测对象 | 控制台用只读 Token 拉隧道与 ingress 状态，和后端探活对账（在线但后端挂了会标黄） |
+
+数据面与控制面是分开的：**流量走 WireGuard（打洞成功则不经过任何服务器），只有编排和观测经过控制台**；awamesh 自己从不转发用户流量。
 
 ## 自测
 
