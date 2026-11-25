@@ -8,7 +8,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "awamesh-test-"));
 const port = 18000 + Math.floor(Math.random() * 900);
 const base = `http://127.0.0.1:${port}`;
 const child = spawn(process.execPath, ["--no-warnings", "src/server.js"], {
-  env: { ...process.env, AWA_PORT: String(port), AWA_HOST: "127.0.0.1", AWA_DATA_DIR: dir, AWA_BACKEND: "mock" },
+  env: { ...process.env, AWA_PORT: String(port), AWA_HOST: "127.0.0.1", AWA_DATA_DIR: dir, AWA_BACKEND: "mock", AWA_DEMO: "1" },
   stdio: ["ignore", "ignore", "ignore"],
 });
 

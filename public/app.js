@@ -76,7 +76,7 @@ function render() {
       <aside class="side" id="side">
         <div class="brand">${logo(20)}<b>awamesh</b></div>
         ${NAV.map(([k, label]) => `<button class="nav-item ${S.view === k ? "on" : ""}" data-nav="${k}">${label}</button>`).join("")}
-        <div class="side-foot">v${esc(S.version)} · ${esc(S.backend)}<br><a href="#" data-act="logout">退出登录</a></div>
+        <div class="side-foot">v${esc(S.version)} · ${esc(S.backend)}${S.backend === "mock" ? `<br><span style="color:var(--warn)">演示数据</span>` : ""}<br><a href="#" data-act="logout">退出登录</a></div>
       </aside>
       <main class="main" id="main"></main>
     </div>`;
@@ -128,6 +128,14 @@ async function renderView() {
   } catch (err) {
     main.innerHTML = `<div class="card"><b>加载失败</b><p class="muted">${esc(err.message)}</p></div>`;
   }
+  if (S.backend === "mock") main.insertAdjacentHTML("afterbegin", mockBanner());
+}
+
+function mockBanner() {
+  return `<div class="card" style="border-color:var(--warn);margin-bottom:12px">
+    <b>演示模式</b><span class="muted"> · 当前 AWA_BACKEND=mock，下面所有设备 / 中继 / 隧道都是假数据。
+    改成 <span class="mono">AWA_BACKEND=wg</span> 并 <span class="mono">docker compose up -d --force-recreate</span> 才会管理真实节点。</span>
+  </div>`;
 }
 
 /* ---------------- 概览 ---------------- */
@@ -142,7 +150,6 @@ async function viewOverview(main) {
         <button class="btn primary" data-act="join">添加设备</button>
       </div>
     </div>
-    ${S.backend === "mock" ? `<div class="card" style="margin-bottom:12px;border-color:var(--warn)"><b>当前是演示模式</b><span class="muted"> · 这些设备/中继/隧道都是假数据。把 AWA_BACKEND 改成 wg（管理你自己的 WireGuard）或 headscale（接真实控制面）后重启容器。</span></div>` : ""}
     <div class="grid c4" style="margin-bottom:14px">
       <div class="kpi"><div class="l">在线设备</div><div class="v">${d.devices.online}<small> / ${d.devices.total}</small></div></div>
       <div class="kpi"><div class="l">本月中继流量</div><div class="v">${fmtGb(d.usedGb)}</div></div>
@@ -271,8 +278,10 @@ async function viewRelays(main) {
       <div class="head-actions">
         <button class="btn" data-act="map">中继地图</button>
         <button class="btn" data-act="refresh">刷新</button>
+        <button class="btn primary" data-act="add">添加中继</button>
       </div>
     </div>
+    ${d.relays.length === 0 ? `<div class="card" style="margin-bottom:14px"><b>还没有中继</b><span class="muted"> · 点右上角「添加中继」，填一台 VPS 的地址和端口即可；随后用「接入命令」在那台机器上装 derper。</span></div>` : ""}
     <div class="grid c2e">
       ${d.relays.map(r => `
         <div class="card">
@@ -292,6 +301,7 @@ async function viewRelays(main) {
             <button class="btn sm" data-relay="${esc(r.id)}" data-op="toggle">${r.enabled ? "从地图摘除" : "启用"}</button>
             <button class="btn sm" data-relay="${esc(r.id)}" data-op="vis">${r.visibility === "private" ? "改为公网" : "改为仅内网"}</button>
             <button class="btn sm" data-relay="${esc(r.id)}" data-op="cmd">接入命令</button>
+            <button class="btn sm danger" data-relay="${esc(r.id)}" data-op="del">删除</button>
           </div>
         </div>`).join("")}
     </div>`;
@@ -302,10 +312,18 @@ async function viewRelays(main) {
       showCode("中继地图（headscale derp.yaml）", m.yaml, `${m.count} 个中继已写入地图`);
     } catch (e) { toast(e.message, true); }
   };
+  main.querySelector('[data-act="add"]').onclick = openAddRelay;
   main.querySelectorAll("[data-relay]").forEach(b => {
     b.onclick = async () => {
       const r = d.relays.find(x => x.id === b.dataset.relay);
       try {
+        if (b.dataset.op === "del") {
+          if (!confirm(`删除中继 ${r.name}？只删面板记录，不影响那台机器上的进程。`)) return;
+          await api(`/api/relays/${encodeURIComponent(r.id)}/delete`, { method: "POST", body: "{}" });
+          toast("已删除");
+          renderView();
+          return;
+        }
         if (b.dataset.op === "cmd") {
           const d2 = await api(`/api/relays/${encodeURIComponent(r.id)}/command`);
           showCode(`中继接入命令 · ${r.region}`, d2.script, "在目标机器上以 root 执行");
@@ -334,22 +352,33 @@ async function viewTunnels(main) {
       <div class="head-actions">
         <button class="btn" data-act="sync" ${d.cfEnabled ? "" : "disabled title='未配置 AWA_CF_TOKEN'"}>从 Cloudflare 同步</button>
         <button class="btn" data-act="refresh">刷新</button>
+        <button class="btn primary" data-act="add">添加隧道</button>
       </div>
     </div>
     <div class="card">
       <div class="rows">
-        <div class="row head" style="grid-template-columns:2fr 1.4fr 0.8fr 0.8fr"><div>域名</div><div>后端</div><div>状态</div><div>检查</div></div>
+        <div class="row head" style="grid-template-columns:2fr 1.4fr 0.8fr 0.8fr 0.6fr"><div>域名</div><div>后端</div><div>状态</div><div>检查</div><div></div></div>
         ${d.tunnels.map(t => `
-          <div class="row" style="grid-template-columns:2fr 1.4fr 0.8fr 0.8fr">
+          <div class="row" style="grid-template-columns:2fr 1.4fr 0.8fr 0.8fr 0.6fr">
             <div class="cell"><b>${esc(t.hostname)}</b></div>
             <div class="cell mono muted">${esc(t.backend)}</div>
-            <div class="cell" style="font-size:12px"><span class="dot ${t.health === "ok" ? "ok" : "warn"}"></span> ${t.health === "ok" ? "正常" : "后端异常"}</div>
+            <div class="cell" style="font-size:12px"><span class="dot ${t.health === "ok" ? "ok" : t.health === "down" ? "bad" : "warn"}"></span> ${t.health === "ok" ? "正常" : t.health === "down" ? "后端不通" : "待检查"}</div>
             <div class="cell dim" style="font-size:12px">${fmtTime(t.last_check)}</div>
-          </div>`).join("") || `<div class="empty">暂无隧道</div>`}
+            <div style="text-align:right"><button class="btn sm danger" data-tun="${esc(t.id)}">删除</button></div>
+          </div>`).join("") || `<div class="empty">还没有隧道，点右上角「添加隧道」</div>`}
       </div>
       <p class="dim" style="font-size:11px;margin:12px 0 0">v0.1 为只读同步；把 ingress 改指 mesh 地址与回滚在 v0.2 提供。</p>
     </div>`;
   main.querySelector('[data-act="refresh"]').onclick = renderView;
+  main.querySelector('[data-act="add"]').onclick = openAddTunnel;
+  main.querySelectorAll("[data-tun]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm("删除这条隧道记录？不影响 Cloudflare 上真实的隧道。")) return;
+      await api(`/api/tunnels/${encodeURIComponent(b.dataset.tun)}/delete`, { method: "POST", body: "{}" });
+      toast("已删除");
+      renderView();
+    };
+  });
   const syncBtn = main.querySelector('[data-act="sync"]');
   if (syncBtn) syncBtn.onclick = async () => {
     syncBtn.disabled = true;
@@ -495,6 +524,10 @@ function showCode(title, code, hint) {
 
 /* ---------------- 添加设备弹层 ---------------- */
 async function openKeyModal() {
+  if (S.backend === "mock") {
+    toast("当前是演示模式，不能添加真实设备：把 AWA_BACKEND 改成 wg 后重建容器", true);
+    return;
+  }
   if (S.backend === "wg") return openWgCreate();
   const mask = document.createElement("div");
   mask.className = "mask";
@@ -594,6 +627,85 @@ function openWgSync() {
       toast(`识别 ${r.parsed} 个 peer，匹配 ${r.matched} 台设备`);
       close();
       renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+/* ---------------- 添加中继 / 隧道 ---------------- */
+function openAddRelay() {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>添加中继</h3>
+      <div class="sub">填一台有公网地址的机器；保存后点「接入命令」，在它上面跑 derper</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><label class="dim" style="font-size:11px">名称</label>
+          <input id="rName" placeholder="香港 · hk-edge" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+        <div><label class="dim" style="font-size:11px">区域</label>
+          <input id="rRegion" placeholder="香港" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px">
+        <div><label class="dim" style="font-size:11px">地址（域名或 IP）</label>
+          <input id="rAddr" placeholder="hk.edge.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+        <div><label class="dim" style="font-size:11px">端口</label>
+          <input id="rPort" value="18444" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+      </div>
+      <label class="dim" style="font-size:11px">可见性</label>
+      <select id="rVis" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
+        <option value="public">公网（所有节点可选）</option>
+        <option value="private">仅内网可见（如家宽）</option>
+      </select>
+      <div class="modal-actions">
+        <button class="btn" data-act="close">取消</button>
+        <button class="btn primary" data-act="ok">保存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.querySelector('[data-act="close"]').onclick = close;
+  mask.onclick = (e) => { if (e.target === mask) close(); };
+  mask.querySelector('[data-act="ok"]').onclick = async () => {
+    try {
+      await api("/api/relays", { method: "POST", body: JSON.stringify({
+        name: mask.querySelector("#rName").value,
+        region: mask.querySelector("#rRegion").value,
+        addr: mask.querySelector("#rAddr").value,
+        port: Number(mask.querySelector("#rPort").value),
+        visibility: mask.querySelector("#rVis").value,
+      })});
+      close(); toast("已添加"); renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+function openAddTunnel() {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>添加隧道</h3>
+      <div class="sub">登记一条「域名 → 内网地址」，用于对照 Cloudflare 上的 ingress</div>
+      <label class="dim" style="font-size:11px">域名</label>
+      <input id="tHost" placeholder="nas.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+      <label class="dim" style="font-size:11px">后端（IP 或主机:端口）</label>
+      <input id="tBack" placeholder="10.88.0.5:5000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
+      <div class="modal-actions">
+        <button class="btn" data-act="close">取消</button>
+        <button class="btn primary" data-act="ok">保存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.querySelector('[data-act="close"]').onclick = close;
+  mask.onclick = (e) => { if (e.target === mask) close(); };
+  mask.querySelector('[data-act="ok"]').onclick = async () => {
+    try {
+      await api("/api/tunnels", { method: "POST", body: JSON.stringify({
+        hostname: mask.querySelector("#tHost").value,
+        backend: mask.querySelector("#tBack").value,
+      })});
+      close(); toast("已添加"); renderView();
     } catch (e) { toast(e.message, true); }
   };
 }

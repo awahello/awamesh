@@ -201,7 +201,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (cfg.backend === "mock") {
-  seedIfEmpty();
+  // 只有显式要演示数据时才灌，避免"装完看到一堆假设备"
+  if (process.env.AWA_DEMO === "1") seedIfEmpty();
 } else {
   const cleared = clearDemo();
   if (cleared.devices || cleared.relays || cleared.tunnels) {

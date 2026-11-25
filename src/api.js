@@ -235,6 +235,54 @@ export async function api(req, res, url, body) {
     return { script: relayScript(r, cfg), relay: r };
   }
 
+
+  if (url.pathname === "/api/relays" && method === "POST") {
+    const name = String(body?.name || "").trim().slice(0, 40);
+    const region = String(body?.region || "").trim().slice(0, 20) || "自定义";
+    const addr = String(body?.addr || "").trim();
+    const port = Number(body?.port || cfg.relayPort);
+    if (!name) throw new Error("中继名称不能为空");
+    if (!addr || /\s/.test(addr)) throw new Error("地址不能为空且不能含空格");
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("端口范围 1-65535");
+    const id = "r_" + Math.random().toString(16).slice(2, 10);
+    db.prepare(`INSERT INTO relays(id,name,region,region_code,addr,port,visibility,quota_gb,used_gb,state,enabled,last_health,demo)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)`)
+      .run(id, name, region, region.toLowerCase().replace(/[^a-z0-9]/g, "") || "relay", addr, port,
+        body?.visibility === "private" ? "private" : "public", Number(body?.quotaGb || 0), 0, "online", 1, now());
+    addEvent("relay", `新增中继 ${name}（${addr}:${port}）`);
+    return { ok: true, id };
+  }
+
+  if (seg[0] === "relays" && seg[2] === "delete" && method === "POST") {
+    const row = db.prepare("SELECT * FROM relays WHERE id = ?").get(seg[1]);
+    if (!row) throw new Error("中继不存在");
+    db.prepare("DELETE FROM relays WHERE id = ?").run(seg[1]);
+    addEvent("relay", `删除中继 ${row.name}`);
+    return { ok: true };
+  }
+
+  if (url.pathname === "/api/tunnels" && method === "POST") {
+    const hostname = String(body?.hostname || "").trim().toLowerCase().slice(0, 120);
+    const backend = String(body?.backend || "").trim().slice(0, 120);
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(hostname)) throw new Error("域名格式不对，例：nas.example.com");
+    if (!backend || !/^[^\s]+:\d{1,5}$/.test(backend)) throw new Error("后端写成 IP或主机:端口，例：10.88.0.5:8080");
+    const id = "t_" + Math.random().toString(16).slice(2, 10);
+    db.prepare(`INSERT INTO tunnels(id,name,hostname,backend,health,latency_ms,last_check,migratable,demo)
+                VALUES(?,?,?,?,?,?,?,?,0)`)
+      .run(id, hostname.split(".")[0], hostname, backend, "unknown", null, now(),
+        /^(localhost|127\.)/.test(backend) ? 1 : 0);
+    addEvent("tunnel", `新增隧道 ${hostname} → ${backend}`);
+    return { ok: true, id };
+  }
+
+  if (seg[0] === "tunnels" && seg[2] === "delete" && method === "POST") {
+    const row = db.prepare("SELECT * FROM tunnels WHERE id = ?").get(seg[1]);
+    if (!row) throw new Error("隧道不存在");
+    db.prepare("DELETE FROM tunnels WHERE id = ?").run(seg[1]);
+    addEvent("tunnel", `删除隧道 ${row.hostname}`);
+    return { ok: true };
+  }
+
   if (url.pathname === "/api/events" && method === "GET") {
     return { events: listEvents(Number(url.searchParams.get("limit") || 50)) };
   }
