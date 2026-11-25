@@ -114,12 +114,12 @@ function renderLogin() {
   };
 }
 
-async function renderView() {
+async function renderView(silent = false) {
   const main = document.getElementById("main");
   if (!main) return;
-  main.innerHTML = `<div class="empty">加载中…</div>`;
+  if (!silent) main.innerHTML = `<div class="empty">加载中…</div>`;
   try {
-    if (S.view === "overview") await viewOverview(main);
+    if (S.view === "overview") await viewOverview(main, silent);
     else if (S.view === "devices") await viewDevices(main);
     else if (S.view === "relays") await viewRelays(main);
     else if (S.view === "tunnels") await viewTunnels(main);
@@ -139,10 +139,10 @@ function mockBanner() {
 }
 
 /* ---------------- 概览 ---------------- */
-async function viewOverview(main) {
+async function viewOverview(main, silent) {
   const d = await api("/api/overview");
   S.data.overview = d;
-  main.innerHTML = `
+  const html = `
     <div class="head">
       <div><h1>概览</h1><div class="sub">${d.devices.total} 台设备 · ${d.devices.online} 在线 · ${d.relays} 个中继 · ${d.tunnels.total} 条隧道${S.backend === "mock" ? " · 演示数据" : ""}</div></div>
       <div class="head-actions">
@@ -175,14 +175,14 @@ async function viewOverview(main) {
       <div class="card">
         <div class="card-h"><b>中继与隧道</b><span>${d.relays} + ${d.tunnels.total}</span></div>
         <div class="dim" style="font-size:11px;margin-bottom:8px">中继流量</div>
-        ${(S.data.relays?.relays || []).slice(0, 3).map(r => `
+        ${(d.relaysList || []).slice(0, 3).map(r => `
           <div style="margin-bottom:9px">
             <div style="display:flex;justify-content:space-between;font-size:12px"><span>${esc(r.region)}</span><span class="muted">${fmtGb(r.used_gb)}${r.quota_gb ? " / " + fmtGb(r.quota_gb) : ""}</span></div>
             <div class="bar" style="margin-top:4px"><i style="width:${r.quota_gb ? Math.min(100, Math.round(r.used_gb / r.quota_gb * 100)) : 5}%"></i></div>
           </div>`).join("") || `<div class="empty">尚未加载</div>`}
         <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
           <div class="dim" style="font-size:11px;margin-bottom:6px">隧道</div>
-          ${(S.data.tunnels?.tunnels || []).slice(0, 4).map(t => `
+          ${(d.tunnelsList || []).slice(0, 4).map(t => `
             <div style="display:flex;align-items:center;gap:7px;font-size:12px;margin-bottom:6px">
               <span class="dot ${t.health === "ok" ? "ok" : "warn"}"></span>
               <span class="cell" style="flex:1">${esc(t.hostname)}</span>
@@ -191,11 +191,19 @@ async function viewOverview(main) {
         </div>
       </div>
     </div>`;
-  main.querySelector('[data-act="refresh"]').onclick = () => renderView();
+
+  if (S._ovHash === html) {                 // 内容没变：什么都不做，避免闪烁
+    clearInterval(S.timer);
+    S.timer = setInterval(() => { if (S.view === "overview") renderView(true); }, 8000);
+    return;
+  }
+  S._ovHash = html;
+  main.innerHTML = html;
+
+  main.querySelector('[data-act="refresh"]').onclick = () => { S._ovHash = ""; renderView(); };
   main.querySelector('[data-act="join"]').onclick = openKeyModal;
-  if (!S.data.relays) api("/api/relays").then(r => { S.data.relays = r; if (S.view === "overview") renderView(); });
-  if (!S.data.tunnels) api("/api/tunnels").then(r => { S.data.tunnels = r; if (S.view === "overview") renderView(); });
-  S.timer = setInterval(() => { if (S.view === "overview") renderView(); }, 8000);
+  clearInterval(S.timer);
+  S.timer = setInterval(() => { if (S.view === "overview") renderView(true); }, 8000);
 }
 
 /* ---------------- 设备 ---------------- */

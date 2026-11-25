@@ -231,7 +231,13 @@ export async function api(req, res, url, body) {
 
   if (url.pathname === "/api/overview") {
     const devices = await be.devices();
-    return { ...overview(devices), groups: groupByTag(devices), events: listEvents(8) };
+    return {
+      ...overview(devices),
+      groups: groupByTag(devices),
+      events: listEvents(8),
+      relaysList: listRelays(),
+      tunnelsList: listTunnels(),
+    };
   }
 
   if (url.pathname === "/api/devices" && method === "GET") {
