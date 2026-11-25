@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { db, now, setting, listDevices, addEvent } from "../db.js";
 import { cfg } from "../config.js";
 import { genKeypair, hostInCidr, clientConfig, serverPeerBlock, openwrtPeerSnippet, parseWgShow } from "../wg.js";
+import { wg, isManaged } from "../wgsrv.js";
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS wg_peers (
@@ -120,7 +121,11 @@ export const wgBackend = {
     return true;
   },
 
-  revoke(id) {
+  async revoke(id) {
+    const peer = db.prepare("SELECT public_key FROM wg_peers WHERE device_id = ?").get(id);
+    if (peer?.public_key && isManaged()) {
+      try { await wg.removePeer(peer.public_key); } catch { /* 接口不在就忽略 */ }
+    }
     db.prepare("DELETE FROM wg_peers WHERE device_id = ?").run(id);
     db.prepare("UPDATE devices SET revoked_at = ? WHERE id = ?").run(now(), id);
     addEvent("device", "已吊销（记得同步删除服务端的 [Peer] 段）", id);

@@ -69,6 +69,15 @@ export const wg = {
     await this.sh("wg", ["set", this.iface, "peer", publicKey, "allowed-ips", `${address}/32`]);
   },
 
+  async setEndpoint(publicKey, endpoint) {
+    if (!endpoint) return;
+    try {
+      await this.sh("wg", ["set", this.iface, "peer", publicKey, "endpoint", endpoint]);
+    } catch {
+      /* 对端暂不可达时忽略 */
+    }
+  },
+
   async removePeer(publicKey) {
     try {
       await this.sh("wg", ["set", this.iface, "peer", publicKey, "remove"]);

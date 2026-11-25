@@ -216,7 +216,7 @@ async function viewDevices(main) {
         `<button class="btn sm ${S.filter === k ? "primary" : ""}" data-filter="${k}">${l}</button>`).join("")}
     </div>
     <div class="devices">
-      <div class="row head"><div>设备</div><div>Mesh 地址</div><div>角色</div><div>路径</div><div>最后在线</div><div></div></div>
+      <div class="row head"><div>设备</div><div>Mesh 地址</div><div>角色</div><div>路径</div><div>出口地址</div><div>最后在线</div><div></div></div>
       <div class="rows">
         ${d.devices.map(x => rowDevice(x)).join("") || `<div class="empty">没有匹配的设备</div>`}
       </div>
@@ -267,6 +267,7 @@ function rowDevice(x) {
     <div class="cell mono muted">${esc(x.mesh_ip || "—")}</div>
     <div class="cell">${roles || `<span class="tag">节点</span>`}</div>
     <div class="cell" style="font-size:12px">${path}</div>
+    <div class="cell mono dim" style="font-size:11px" title="${esc(x.endpoint || "")}">${x.endpoint ? esc(x.endpoint) : `<span class="tag">经控制台</span>`}</div>
     <div class="cell dim" style="font-size:12px">${x.online ? fmtTime(x.last_seen) : x.last_seen ? fmtTime(x.last_seen) : "—"}</div>
     <div style="display:flex;gap:6px;justify-content:flex-end">
       <button class="btn sm" data-dev="${esc(x.id)}" data-op="conf">配置</button>

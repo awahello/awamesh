@@ -208,13 +208,17 @@ export function peersForNode(nodeToken) {
 }
 
 /** 节点每次刷新时顺带上报自己的 endpoint（公网 IP 可能变） */
-export function updateNodeEndpoint(nodeToken, endpoint, port) {
+export async function updateNodeEndpoint(nodeToken, endpoint, port) {
   const hash = crypto.createHash("SHA256").update(String(nodeToken || "")).digest("hex");
   const self = db.prepare("SELECT * FROM devices WHERE node_token = ?").get(hash);
   if (!self) throw Object.assign(new Error("节点凭据无效"), { status: 401 });
   const ep = String(endpoint || "").trim().slice(0, 120);
   if (!ep) return { ok: true, changed: false };
   db.prepare("UPDATE devices SET endpoint = ?, wg_port = ? WHERE id = ?").run(ep, Number(port) || null, self.id);
+  if (isManaged()) {
+    const peer = db.prepare("SELECT public_key FROM wg_peers WHERE device_id = ?").get(self.id);
+    if (peer?.public_key) await wg.setEndpoint(peer.public_key, ep.includes(":") ? ep : `${ep}:${Number(port) || 51820}`);
+  }
   return { ok: true, changed: self.endpoint !== ep };
 }
 

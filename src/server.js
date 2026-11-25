@@ -241,6 +241,8 @@ function serveStatic(res, urlPath) {
   });
 }
 
+const joinRate = new Map();
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const p = url.pathname;
@@ -273,6 +275,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/join" && req.method === "POST") {
+      const ip = req.socket.remoteAddress || "-";
+      const t = Date.now();
+      const rec = joinRate.get(ip);
+      if (!rec || t > rec.reset) joinRate.set(ip, { n: 1, reset: t + 60_000 });
+      else if (++rec.n > 20) return json(res, 429, { error: "请求过于频繁，请一分钟后再试" });
       const body = await readBody(req);
       const r = await joinPeer({ ...(body || {}), _host: req.headers.host || "" });
       if (url.searchParams.get("format") === "shell") {
@@ -359,6 +366,23 @@ async function wgBoot() {
     log(`[wg] 已接管接口 ${wg.iface}：${serverIp}/${subnet.split("/")[1] || 24} · udp ${port}`);
     _wgOn = true;
     setManaged(true);
+
+    // 容器/netns 重建后接口是空的：从库里恢复历史对端，否则重启一次全网断
+    const rows = db.prepare(`
+      SELECT p.public_key, p.address, d.endpoint
+      FROM wg_peers p JOIN devices d ON d.id = p.device_id
+      WHERE d.revoked_at IS NULL AND p.public_key IS NOT NULL AND p.public_key != ''`).all();
+    let restored = 0;
+    for (const r of rows) {
+      try {
+        await wg.addPeer(r.public_key, r.address);
+        if (r.endpoint) await wg.setEndpoint(r.public_key, r.endpoint);
+        restored++;
+      } catch (e) {
+        log(`[wg] 恢复对端失败（${r.address}）：${e.message}`);
+      }
+    }
+    log(`[wg] 已恢复 ${restored}/${rows.length} 个历史对端`);
     setInterval(syncWgStatus, 20000).unref();
     await syncWgStatus();
   } catch (e) {
@@ -375,14 +399,21 @@ async function syncWgStatus() {
   try {
     const peers = await wg.dump();
     const byKey = new Map(db.prepare("SELECT device_id, public_key FROM wg_peers").all().map(r => [r.public_key, r.device_id]));
+    const cur = new Map(db.prepare("SELECT id, last_seen, path FROM devices").all().map(r => [r.id, r]));
     const t = Math.floor(Date.now() / 1000);
+    const upd = db.prepare("UPDATE devices SET last_seen = ?, path = ? WHERE id = ?");
+    let changed = 0;
     for (const p of peers) {
       const id = byKey.get(p.publicKey);
       if (!id) continue;
       const seen = p.handshake || null;
-      db.prepare("UPDATE devices SET last_seen = ?, path = ?, latency_ms = NULL WHERE id = ?")
-        .run(seen, seen && t - seen < 180 ? "direct" : "", id);
+      const path = seen && t - seen < 180 ? "direct" : "";
+      const old = cur.get(id);
+      if (old && old.last_seen === seen && old.path === path) continue; // 没变就不写库
+      upd.run(seen, path, id);
+      changed++;
     }
+    if (changed) log(`[wg] 状态更新 ${changed} 台`);
   } catch (e) {
     log("[wg] 状态同步失败：" + e.message);
   }
