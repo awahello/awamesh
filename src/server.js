@@ -437,9 +437,24 @@ async function syncWgStatus() {
 globalThis.__awaWgRetry = () => wgBoot();
 globalThis.__awaProbeRelays = () => probeRelays();
 
+/** 内置中转：控制台本身就是星型转发点，不需要额外部署 */
+function ensureBuiltinRelay() {
+  if (cfg.backend !== "wg") return;
+  const row = db.prepare("SELECT id FROM relays WHERE id = 'r_builtin'").get();
+  const t = Math.floor(Date.now() / 1000);
+  if (!row) {
+    db.prepare(`INSERT INTO relays(id,name,region,region_code,addr,port,visibility,quota_gb,used_gb,state,enabled,last_health,demo,kind)
+                VALUES('r_builtin','本机 · 控制台','本机','local',?,0,'private',0,0,'online',1,?,0,'builtin')`)
+      .run(process.env.AWA_PUBLIC_HOST || "console", t);
+    addEvent("relay", "内置中转已启用：控制台自身承担转发（无需部署 DERP）");
+  } else {
+    db.prepare("UPDATE relays SET state = 'online', last_health = ? WHERE id = 'r_builtin'").run(t);
+  }
+}
+
 /** 中继健康检查：TCP 连得上才算在线；状态变化写事件 */
 async function probeRelays() {
-  const rows = db.prepare("SELECT * FROM relays WHERE enabled = 1").all();
+  const rows = db.prepare("SELECT * FROM relays WHERE enabled = 1 AND (kind IS NULL OR kind != 'builtin')").all();
   for (const r of rows) {
     const res = await tcpProbe(r.addr, r.port || 18444, 3000).catch(() => ({ ok: false, error: "probe-error" }));
     const state = res.ok ? "online" : "offline";
@@ -457,6 +472,7 @@ server.listen(cfg.port, cfg.host, () => {
   log(`后端：${cfg.backend} ｜ 网段：${cfg.meshCidr} ｜ 数据目录：${cfg.dataDir}`);
   if (cfg.mode === "tiny") log("tiny 模式：事件保留 " + cfg.eventKeepDays + " 天，健康检查间隔放宽");
   wgBoot();
+  ensureBuiltinRelay();
   probeRelays().catch(() => {});
   setInterval(() => probeRelays().catch(() => {}), 60_000).unref();
 });

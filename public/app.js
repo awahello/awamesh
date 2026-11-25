@@ -294,7 +294,7 @@ async function viewRelays(main) {
   S.data.relays = d;
   main.innerHTML = `
     <div class="head">
-      <div><h1>中继节点</h1><div class="sub">${d.relays.filter(r => r.enabled).length} 个已启用 · 中继端口 ${d.relayPort}</div></div>
+      <div><h1>中继节点</h1><div class="sub">${d.relays.filter(r => r.enabled).length} 个已启用（含内置中转 ${d.relays.filter(r => r.kind === "builtin").length}）· DERP 端口 ${d.relayPort}</div></div>
       <div class="head-actions">
         <button class="btn" data-act="map">中继地图</button>
         <button class="btn" data-act="refresh">刷新</button>
@@ -309,9 +309,9 @@ async function viewRelays(main) {
             <b style="display:flex;align-items:center;gap:7px">
               <span class="dot ${!r.enabled ? "off" : r.state === "online" ? "ok" : r.state === "offline" ? "bad" : "warn"}"></span>${esc(r.region)} · ${esc(r.name.split("·").pop().trim())}
             </b>
-            ${r.visibility === "private" ? `<span class="tag info">仅内网</span>` : `<span class="tag">公网</span>`}
+            ${r.kind === "builtin" ? `<span class="tag info">内置</span>` : r.visibility === "private" ? `<span class="tag info">仅内网</span>` : `<span class="tag">公网</span>`}
           </div>
-          <div class="mono muted" style="font-size:12px;margin-bottom:8px">${esc(r.addr)}:${r.port}</div>
+          <div class="mono muted" style="font-size:12px;margin-bottom:8px">${r.kind === "builtin" ? "控制台自身的 WireGuard 转发（无需部署）" : esc(r.addr) + ":" + r.port}</div>
           <div style="display:flex;justify-content:space-between;font-size:12px" class="muted">
             <span>本月 ${fmtGb(r.used_gb)}${r.quota_gb ? " / " + fmtGb(r.quota_gb) : ""}</span>
             <span>${r.state === "online" ? "在线" : r.state === "offline" ? "不可达" : "未验证"}</span>
@@ -320,8 +320,8 @@ async function viewRelays(main) {
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn sm" data-relay="${esc(r.id)}" data-op="toggle">${r.enabled ? "从地图摘除" : "启用"}</button>
             <button class="btn sm" data-relay="${esc(r.id)}" data-op="vis">${r.visibility === "private" ? "改为公网" : "改为仅内网"}</button>
-            <button class="btn sm" data-relay="${esc(r.id)}" data-op="cmd">接入命令</button>
-            <button class="btn sm danger" data-relay="${esc(r.id)}" data-op="del">删除</button>
+            ${r.kind === "builtin" ? "" : `<button class="btn sm" data-relay="${esc(r.id)}" data-op="cmd">接入命令</button>
+            <button class="btn sm danger" data-relay="${esc(r.id)}" data-op="del">删除</button>`}
           </div>
         </div>`).join("")}
     </div>`;

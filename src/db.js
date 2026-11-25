@@ -77,6 +77,9 @@ CREATE TABLE IF NOT EXISTS authkeys (
 );
 `);
 
+// 迁移：区分内置中转（控制台自身）与外部 DERP 中继
+try { db.exec("ALTER TABLE relays ADD COLUMN kind TEXT DEFAULT 'derp'"); } catch {}
+
 // 迁移：P2P 相关字段（节点上报的公网 endpoint 与刷新凭据）
 try { db.exec("ALTER TABLE devices ADD COLUMN endpoint TEXT"); } catch {}
 try { db.exec("ALTER TABLE devices ADD COLUMN wg_port INTEGER"); } catch {}

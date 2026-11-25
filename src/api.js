@@ -437,7 +437,7 @@ export async function api(req, res, url, body) {
   }
 
   if (url.pathname === "/api/relays/map" && method === "GET") {
-    const list = listRelays().filter(r => r.enabled);
+    const list = listRelays().filter(r => r.enabled && r.kind !== "builtin");
     const lines = ["regions:"];
     list.forEach((r, i) => {
       const id = 900 + i;
@@ -491,6 +491,7 @@ export async function api(req, res, url, body) {
   if (seg[0] === "relays" && seg[2] === "delete" && method === "POST") {
     const row = db.prepare("SELECT * FROM relays WHERE id = ?").get(seg[1]);
     if (!row) throw new Error("中继不存在");
+    if (row.id === "r_builtin") throw new Error("内置中转是控制台自身，不能删除（可在设置里关闭内置中转）");
     db.prepare("DELETE FROM relays WHERE id = ?").run(seg[1]);
     addEvent("relay", `删除中继 ${row.name}`);
     return { ok: true };
