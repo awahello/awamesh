@@ -153,9 +153,9 @@ export function seedIfEmpty() {
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(id, name, region, code, addr, port, vis, quota, used, "online", enabled, t - 10);
 
-  rel("r_hk", "香港 · hk-edge", "香港", "hk", "hk.edge.example.com", 8443, "public", 500, 62, 1);
-  rel("r_seoul", "首尔 · seoul-vps", "首尔", "seoul", "seoul.example.com", 8443, "public", 1024, 128, 1);
-  rel("r_home", "家宽 · router-home", "家宽", "home", "home.example.com", 8443, "private", 0, 18, 1);
+  rel("r_hk", "香港 · hk-edge", "香港", "hk", "hk.edge.example.com", 18444, "public", 500, 62, 1);
+  rel("r_seoul", "首尔 · seoul-vps", "首尔", "seoul", "seoul.example.com", 18444, "public", 1024, 128, 1);
+  rel("r_home", "家宽 · router-home", "家宽", "home", "home.example.com", 18444, "private", 0, 18, 1);
 
   const tun = (id, name, host, back, health, ms, mig) =>
     db.prepare(`INSERT INTO tunnels(id,name,hostname,backend,health,latency_ms,last_check,migratable) VALUES(?,?,?,?,?,?,?,?)`)

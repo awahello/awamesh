@@ -19,7 +19,7 @@ export const cfg = {
   eventKeepDays: Number(env.AWA_EVENT_KEEP_DAYS || 30),
   controlUrl: env.AWA_CONTROL_URL || "",
   cfToken: env.AWA_CF_TOKEN || "",
-  relayPort: Number(env.AWA_RELAY_PORT || 8443),
+  relayPort: Number(env.AWA_RELAY_PORT || 18444),
 };
 
 fs.mkdirSync(cfg.dataDir, { recursive: true });

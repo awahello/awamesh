@@ -6,10 +6,12 @@ services:
       dockerfile: docker/Dockerfile
     container_name: awamesh
     ports:
-      - "18443:18443"
+      - "18443:18443"          # 面板
+      # - "18444:18444"        # 本机同时做中继时打开
     environment:
       - AWA_SECRET=change_me_to_a_long_random_string
       - AWA_PORT=18443
+      # - AWA_RELAY_PORT=18444
       - AWA_DATA_DIR=/data
       - AWA_MODE=full                 # full | tiny（tiny：少占内存，事件保留 3 天）
       - AWA_BACKEND=mock              # mock 演示 | headscale 接入真实控制面

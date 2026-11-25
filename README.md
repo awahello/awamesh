@@ -126,6 +126,7 @@ awamesh 不接管你已有的东西，只做增量：
 | `AWA_CONTROL_URL` | 空 | 控制面地址，写进接入脚本 |
 | `AWA_MESH_CIDR` | 10.88.0.0/24 | Mesh 网段 |
 | `AWA_MESH_DOMAIN` | mesh | MagicDNS 后缀 |
+| `AWA_RELAY_PORT` | 18444 | 中继端口（每台可在面板里单独覆盖） |
 | `AWA_MTU` | 1420 | WireGuard MTU（跨境链路可降 1280） |
 | `AWA_EVENT_KEEP_DAYS` | 30 | 事件保留天数 |
 | `AWA_MODE` | full | `tiny` 降低内存占用 |
@@ -190,7 +191,7 @@ flowchart TB
 | 角色 | 谁承担（示例） | 作用 |
 |---|---|---|
 | 节点 node | 所有设备 | 拿到 `10.88.0.x`，彼此互通 |
-| 中继 relay | seoul-vps、hk-edge、家宽 | 打洞失败时转发（DERP，走 443/8443，穿墙最稳） |
+| 中继 relay | seoul-vps、hk-edge、家宽 | 打洞失败时转发（DERP，默认 **18444**，每台可单独改；最严的网络才需要 443） |
 | 网段网关 gateway | router-home、任意一台 Linux | `--advertise-routes` 把所在 LAN 发布进 Mesh |
 | 出口 exit | 任意一台 | 作为全流量出口，客户端自选 |
 
@@ -239,8 +240,8 @@ npm run selftest
 **Q：端口冲突怎么办？**
 默认面板端口是 **18443**（避开 8080/8000/9000 这些常被占用的）。要改的话两处一起改：compose 里的 `ports` 和 `AWA_PORT`，两者必须一致，否则容器起来了但访问不到。用 `install.sh` 时会自动检测占用并往后找。
 
-**Q：端口冲突怎么办？**
-默认面板端口是 **18443**（避开 8080/8000/9000 这些常被占用的）。要改的话两处一起改：compose 里的 `ports` 和 `AWA_PORT`，两者必须一致，否则容器起来了但访问不到。用 `install.sh` 时会自动检测占用并往后找。
+**Q：中继端口会不会和 443 打架？**
+默认中继端口是 **18444**，不是 443/8443。每台中继在面板里可以单独设端口：只有当你确信目标网络**只放行 443** 时，才给那台中继改成 443（同时把该机的 `cloudflared`/nginx 挪走，否则确实会撞）。
 
 **Q：会消耗我多少内存？**
 控制台空载约 50–60MB（Node），中继几乎不吃 CPU 只吃带宽。`AWA_MODE=tiny` 可再降。
