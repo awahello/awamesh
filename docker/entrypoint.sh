@@ -15,6 +15,10 @@ mkdir -p "$DATA"
 
 if [ "$(id -u)" = "0" ]; then
   chown -R node:node "$DATA" 2>/dev/null || true
+  # 托管 WireGuard 接口需要 NET_ADMIN，必须是 root；AWA_WG_ENABLE=0 可降权只跑面板
+  if [ "\${AWA_WG_ENABLE:-1}" = "1" ]; then
+    exec node --no-warnings src/server.js
+  fi
   exec su-exec node node --no-warnings src/server.js
 fi
 

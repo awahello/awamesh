@@ -2,6 +2,9 @@ import { cfg } from "./config.js";
 import { db, now, setting, listRelays, listTunnels, listEvents, addEvent } from "./db.js";
 import { backend } from "./backends/index.js";
 import { cfEnabled, listAccounts, listTunnels as cfListTunnels, toRows } from "./cloudflare.js";
+import crypto from "node:crypto";
+import { wg, isManaged } from "./wgsrv.js";
+import { hostInCidr } from "./wg.js";
 
 const r = (n, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
 
@@ -88,6 +91,82 @@ echo "  下一步：在 awamesh 的「中继节点」页确认状态为在线，
 `;
 }
 
+
+/** 分配一个空闲 mesh 地址（跳过 .1 服务端与已占用） */
+export function allocAddress(subnet) {
+  const used = new Set(db.prepare("SELECT address FROM wg_peers").all().map(r => r.address));
+  for (const d of db.prepare("SELECT mesh_ip FROM devices WHERE mesh_ip IS NOT NULL AND revoked_at IS NULL").all()) {
+    if (d.mesh_ip) used.add(d.mesh_ip);
+  }
+  for (let n = 2; n < 250; n++) {
+    const ip = hostInCidr(subnet, n);
+    if (!used.has(ip)) return ip;
+  }
+  throw new Error("网段里没有可用地址了");
+}
+
+/**
+ * 节点自主加入：节点本地生成密钥，只把公钥交给控制台。
+ * 控制台负责分配地址、把它加进服务端接口，并返回完整配置。
+ */
+export async function joinPeer(body) {
+  const token = String(body?.token || "").trim();
+  const publicKey = String(body?.pubkey || "").trim();
+  const hostname = String(body?.hostname || "node").trim().slice(0, 40) || "node";
+
+  if (!/^awa_[a-f0-9]{16,}$/i.test(token)) throw Object.assign(new Error("密钥格式不对"), { status: 400 });
+  if (!/^[A-Za-z0-9+/]{43}=?$/.test(publicKey)) throw Object.assign(new Error("公钥格式不对"), { status: 400 });
+
+  const hash = crypto.createHash("SHA256").update(token).digest("hex");
+  const row = db.prepare("SELECT * FROM authkeys WHERE hash = ?").get(hash);
+  if (!row) throw Object.assign(new Error("密钥不存在（请重新生成）"), { status: 401 });
+  if (row.used_at) throw Object.assign(new Error("该密钥已被使用"), { status: 401 });
+  if (row.expires_at && row.expires_at < now()) throw Object.assign(new Error("密钥已过期"), { status: 401 });
+
+  const pf = backend().profile?.() || {};
+  const subnet = pf.subnet || cfg.meshCidr;
+  const address = allocAddress(subnet);
+  const id = "d_" + crypto.randomBytes(5).toString("hex");
+  const t = now();
+
+  db.prepare(`INSERT INTO devices(id,name,mesh_ip,hostname,os,client_ver,tags,roles,path,latency_ms,relay,last_seen,key_fp,created_at,demo)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`)
+    .run(id, hostname, address, hostname, "", "", row.tag || "", "node", "", null, null, null, publicKey, t);
+  db.prepare("INSERT INTO wg_peers(device_id,private_key,public_key,address,created_at) VALUES(?,?,?,?,?)")
+    .run(id, "", publicKey, address, t);
+  db.prepare("UPDATE authkeys SET used_at = ? WHERE id = ?").run(t, row.id);
+
+  // Endpoint 没填时，用请求 Host 兜底推导（面板域名/IP + wg 端口）
+  let endpoint = pf.endpoint || "";
+  if (!endpoint && body?._host) {
+    const hostOnly = String(body._host).split(":")[0];
+    endpoint = `${hostOnly}:${process.env.AWA_WG_PORT || 51820}`;
+  }
+  if (!endpoint) throw Object.assign(new Error("控制台还没填 Endpoint（设置 → WireGuard 服务端），请先填公网地址:端口"), { status: 400 });
+
+  let applied = false;
+  if (isManaged()) {
+    try {
+      await wg.addPeer(publicKey, address);
+      applied = true;
+    } catch (e) {
+      addEvent("device", `加 peer 失败（${e.message}），已下发配置，需在服务端手动补一条`, id);
+    }
+  }
+  addEvent("device", `${hostname} 通过配置加入（${address}）${applied ? "" : " · 服务端接口未接管，需手动加 peer"}`, id);
+
+  return {
+    id, name: hostname, address,
+    prefix: subnet.split("/")[1] || "24",
+    serverPub: pf.serverPub || setting("wg_server_pub"),
+    endpoint,
+    mtu: pf.mtu || 1420,
+    dns: pf.dns || "",
+    allowedIps: [subnet, ...(pf.lanRoutes ? pf.lanRoutes.split(",").map(x => x.trim()).filter(Boolean) : [])].join(","),
+    applied,
+  };
+}
+
 export async function api(req, res, url, body) {
   const be = backend();
   const seg = url.pathname.replace(/^\/api\/?/, "").split("/").filter(Boolean);
@@ -128,7 +207,7 @@ export async function api(req, res, url, body) {
   if (url.pathname === "/api/wg/profile" && method === "GET") {
     if (typeof be.profile !== "function") throw new Error("当前后端不是 wg");
     const { serverPriv, ...rest } = be.profile();
-    return rest;
+    return { ...rest, managed: isManaged() };
   }
 
   if (url.pathname === "/api/wg/profile" && method === "POST") {
@@ -160,6 +239,29 @@ export async function api(req, res, url, body) {
     if (typeof be.sync !== "function") throw new Error("当前后端不是 wg");
     if (!body?.text) throw new Error("请粘贴 wg show 的输出");
     return be.sync(body.text);
+  }
+
+
+  if (seg[0] === "devices" && seg[2] === "config" && method === "GET") {
+    const peer = db.prepare("SELECT * FROM wg_peers WHERE device_id = ?").get(seg[1]);
+    if (!peer) throw new Error("该设备没有配置记录");
+    if (!peer.private_key) {
+      throw new Error("这台是节点自助加入的，私钥只存在于节点本机（这是设计如此）");
+    }
+    const pf = be.profile?.() || {};
+    const { clientConfig } = await import("./wg.js");
+    return {
+      clientConfig: clientConfig({
+        privateKey: peer.private_key,
+        address: `${peer.address}/${(pf.subnet || cfg.meshCidr).split("/")[1] || 24}`,
+        serverPubKey: pf.serverPub,
+        endpoint: pf.endpoint || "",
+        subnet: pf.subnet || cfg.meshCidr,
+        mtu: pf.mtu || 1420,
+        dns: pf.dns || "",
+        extraRoutes: pf.lanRoutes ? pf.lanRoutes.split(",").map(x => x.trim()).filter(Boolean) : [],
+      }),
+    };
   }
 
   if (seg[0] === "devices" && seg[2] === "rename" && method === "POST") {

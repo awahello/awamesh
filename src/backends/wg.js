@@ -101,6 +101,17 @@ export const wgBackend = {
     };
   },
 
+  /** 一次性接入密钥（节点用它换取配置） */
+  createKey(tag = "test", ttlHours = 1) {
+    const plain = "awa_" + crypto.randomBytes(16).toString("hex");
+    const hash = crypto.createHash("SHA256").update(plain).digest("hex");
+    const id = "k_" + crypto.randomBytes(4).toString("hex");
+    db.prepare("INSERT INTO authkeys(id,tag,hash,expires_at,used_at,created_at) VALUES(?,?,?,?,?,?)")
+      .run(id, tag, hash, now() + ttlHours * 3600, null, now());
+    addEvent("key", `生成接入密钥（${tag}，${ttlHours} 小时）`);
+    return { id, key: plain, tag, expiresAt: now() + ttlHours * 3600 };
+  },
+
   rename(id, name) {
     const clean = String(name || "").trim().slice(0, 40);
     if (!clean) throw new Error("名称不能为空");

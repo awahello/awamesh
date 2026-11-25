@@ -78,7 +78,7 @@ try {
   check("生成一次性密钥", r.status === 200 && /^awa_[a-f0-9]{16,}$/.test(key), r.text);
 
   r = await call("/join.sh?key=" + key);
-  check("接入脚本可直接执行", r.status === 200 && r.text.includes(key) && r.text.includes("tailscale up"), r.text.slice(0, 80));
+  check("接入脚本可直接执行", r.status === 200 && r.text.includes(key) && r.text.includes("wg genkey"), r.text.slice(0, 80));
 
   r = await call("/api/relays");
   check("中继列表", r.status === 200 && r.body.relays.length >= 3, JSON.stringify(r.body).slice(0, 100));

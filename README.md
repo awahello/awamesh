@@ -41,7 +41,11 @@ services:
   awamesh:
     image: ghcr.io/awahello/awamesh:latest
     container_name: awamesh
-    ports: ["18443:18443"]
+    cap_add: [NET_ADMIN]        # 托管 WireGuard 接口需要
+    sysctls: { net.ipv4.ip_forward: "1" }
+    ports:
+      - "18443:18443"
+      - "51820:51820/udp"
     environment:
       - AWA_SECRET=换成一串32位随机字符
       - AWA_PORT=18443
@@ -87,62 +91,44 @@ docker compose up -d --force-recreate
 
 ---
 
-## 教程一：接入你的第一台真实设备
+## 教程一：接入设备（只跑一条命令）
 
-前提：已有一个可用的 WireGuard 服务端（OpenWrt / VPS 都行）。
+awamesh 自己就是 WireGuard 服务端：密钥、地址、对端全部由控制台分配，节点只负责"跑一条命令"。
 
-**1）拿到服务端信息**
-
-```bash
-wg show                       # 记下 public key 与监听端口
-```
-
-**2）面板 → 设置 → WireGuard 服务端**
+**1）设置 → WireGuard 服务端**，只填一项必需：
 
 | 字段 | 例子 | 说明 |
 |---|---|---|
-| Endpoint | `1.2.3.4:51820` | 你 OpenWrt 的公网地址 + wg 端口 |
-| 服务端公钥 | `xxxx…=` | **必须是上面 `wg show` 里的 public key**，不是 awamesh 生成的那把 |
-| Mesh 网段 | `10.88.0.0/24` | 别和你现有 wg 网段撞 |
-| MTU | `1420` | 跨境丢包严重时改 `1280` |
-| 额外下发路由 | `192.168.1.0/24` | 家里 LAN，客户端才能访问家里设备 |
+| Endpoint | `1.2.3.4:51820` | 你这台机器的公网地址 + wg 端口（UDP 51820 要在防火墙/安全组放行） |
+| Mesh 网段 | `10.88.0.0/24` | 默认即可 |
+| MTU | `1420` | 跨境丢包时改 `1280` |
+| 额外下发路由 | `192.168.1.0/24` | 想通过这台访问某个内网段时填 |
+| DNS | 可空 | 想用节点名互访时填 `10.88.0.1` |
 
-**3）设备 → 添加设备 → 输入名字**，得到三块内容：
+> 「服务端公钥」显示的是 awamesh 自己生成的那把，不用改 —— 它就是这个 mesh 的服务端。
 
-```
-① 客户端配置（wg-quick / WireGuard App 直接导入）
-② 服务端 [Peer] 段（追加到 wg0）
-③ OpenWrt UCI 片段（/etc/config/network）
-```
-
-**4）服务端加 peer 并重启接口**
-
-```bash
-# 通用：把 ② 追加到 wg0.conf 末尾
-wg-quick down wg0 && wg-quick up wg0
-```
+**2）设备 → 添加设备** → 填设备名 + 有效期 → 得到一条命令：
 
 ```sh
-# OpenWrt：用 ③ 的 UCI 写法
-uci add network wireguard_awa
-uci set network.@wireguard_awa[-1].description='db-01'
-uci set network.@wireguard_awa[-1].public_key='<对端 publicKey>'
-uci set network.@wireguard_awa[-1].persistent_keepalive='25'
-uci add_list network.@wireguard_awa[-1].allowed_ips='10.88.0.5/32'
-uci commit network
-ifup wg0
+curl -fsSL 'http://你的控制台:18443/join.sh?key=awa_xxx' | sh -s -- --hostname router-home
 ```
 
-**5）客户端导入 ① 连上，然后看真实状态**
+**3）在 OpenWrt / Linux 上以 root 执行它**，脚本会：
 
-```bash
-# 服务端执行
-wg show
+```
+① 装 wireguard-tools（apk / apt / dnf / yum 自动判断）
+② 本地生成密钥（私钥不出这台机器）
+③ 向控制台申请地址（一次性密钥，用完即废）
+④ 写 /etc/wireguard/awa0.conf 并 wg-quick up
 ```
 
-面板 → 设备 → **同步状态**，把整段粘进去：按公钥或地址匹配，刷新在线、最近握手、直连标记。
+**4）回到面板刷新**，那台设备已经出现，地址是 `10.88.0.x`。在线状态由控制台每 20 秒读一次 `wg show` 自动刷新，**不需要你手动同步**。
 
----
+Windows：把控制台生成的手动配置（设备列表里点该设备的「配置」）用 WireGuard 官方客户端导入即可。
+
+### 如果没有 NET_ADMIN（纯面板模式）
+
+控制台检测不到 wg 命令或建不了接口时，会退回"手动模式"：添加设备直接给你三份内容（客户端配置 / 服务端 `[Peer]` / OpenWrt UCI），你粘到自己的 WireGuard 服务端。此时靠「同步状态」粘 `wg show` 刷新。
 
 ## 教程二：添加中继节点
 
@@ -230,6 +216,16 @@ curl -s localhost:18443/api/health                             # 健康检查
 ```bash
 docker compose exec awamesh node --no-warnings -e "const{DatabaseSync}=require('node:sqlite');const db=new DatabaseSync('/data/awamesh.db');db.prepare('delete from settings where key=?').run('admin_credential');console.log('cleared')"
 docker compose restart awamesh && docker compose logs --tail 20 awamesh
+```
+
+**接入节点**
+
+```bash
+# 在节点上（OpenWrt / Linux，root）
+curl -fsSL 'http://控制台:18443/join.sh?key=awa_xxx' | sh -s -- --hostname router-home
+
+# 已接入过的节点重跑（同一 --iface 会覆盖配置）
+curl -fsSL 'http://控制台:18443/join.sh?key=awa_yyy' | sh -s -- --iface awa0
 ```
 
 **WireGuard**

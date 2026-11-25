@@ -14,7 +14,7 @@ ENV NODE_ENV=production \
     AWA_DATA_DIR=/data
 
 COPY docker/entrypoint.sh /app/docker/entrypoint.sh
-RUN apk add --no-cache su-exec \
+RUN apk add --no-cache su-exec wireguard-tools iproute2 iptables \
  && chmod +x /app/docker/entrypoint.sh \
  && mkdir -p /data && chown -R node:node /app /data
 

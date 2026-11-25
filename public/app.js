@@ -236,6 +236,13 @@ async function viewDevices(main) {
         try { await api(`/api/devices/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ name }) }); toast("已重命名"); renderView(); }
         catch (e) { toast(e.message, true); }
       }
+      if (b.dataset.op === "conf") {
+        try {
+          const c = await api(`/api/devices/${encodeURIComponent(id)}/config`);
+          showCode(`${dev.name} · WireGuard 配置`, c.clientConfig || "该设备没有可用私钥（自助加入的节点私钥在其本机）");
+        } catch (e) { toast(e.message, true); }
+        return;
+      }
       if (b.dataset.op === "revoke") {
         if (!confirm(`吊销 ${dev.name}？该设备会立即断网，只能重新加入。`)) return;
         try { await api(`/api/devices/${encodeURIComponent(id)}/revoke`, { method: "POST", body: "{}" }); toast("已吊销"); renderView(); }
@@ -262,6 +269,7 @@ function rowDevice(x) {
     <div class="cell" style="font-size:12px">${path}</div>
     <div class="cell dim" style="font-size:12px">${x.online ? fmtTime(x.last_seen) : x.last_seen ? fmtTime(x.last_seen) : "—"}</div>
     <div style="display:flex;gap:6px;justify-content:flex-end">
+      <button class="btn sm" data-dev="${esc(x.id)}" data-op="conf">配置</button>
       <button class="btn sm" data-dev="${esc(x.id)}" data-op="rename">改名</button>
       <button class="btn sm danger" data-dev="${esc(x.id)}" data-op="revoke">吊销</button>
     </div>
@@ -528,7 +536,11 @@ async function openKeyModal() {
     toast("当前是演示模式，不能添加真实设备：把 AWA_BACKEND 改成 wg 后重建容器", true);
     return;
   }
-  if (S.backend === "wg") return openWgCreate();
+  if (S.backend === "wg") {
+    const pf = await api("/api/wg/profile").catch(() => null);
+    if (pf?.managed) return openJoinCommand();
+    return openWgCreate();
+  }
   const mask = document.createElement("div");
   mask.className = "mask";
   mask.innerHTML = `
@@ -599,6 +611,45 @@ async function openWgCreate() {
       mask.querySelector('[data-act="gen"]').textContent = "再添加一台";
       toast("已创建，配置只显示这一次");
       if (S.view === "devices") renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+/* ---------------- wg（托管）：一条命令加入 ---------------- */
+async function openJoinCommand() {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>添加设备</h3>
+      <div class="sub">控制台已在托管 WireGuard 服务端。在目标机器上跑这一条即可，配置会自己写好</div>
+      <label class="dim" style="font-size:11px">设备名（会作为节点标签）</label>
+      <input id="joinHost" placeholder="router-home" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+      <label class="dim" style="font-size:11px">有效期（小时）</label>
+      <input id="joinTtl" type="number" value="1" min="1" max="24" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
+      <div id="joinOut"></div>
+      <div class="modal-actions">
+        <button class="btn" data-act="close">关闭</button>
+        <button class="btn primary" data-act="gen">生成命令</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.querySelector('[data-act="close"]').onclick = close;
+  mask.onclick = (e) => { if (e.target === mask) close(); };
+  mask.querySelector('[data-act="gen"]').onclick = async () => {
+    try {
+      const r = await api("/api/keys", {
+        method: "POST",
+        body: JSON.stringify({ tag: mask.querySelector("#joinHost").value || "node", ttl: Number(mask.querySelector("#joinTtl").value) }),
+      });
+      const host = mask.querySelector("#joinHost").value.trim();
+      const cmd = `curl -fsSL '${location.origin}/join.sh?key=${r.key}' | sh -s --${host ? ` --hostname ${host}` : ""}`;
+      mask.querySelector("#joinOut").innerHTML = `
+        <div class="dim" style="font-size:11px">在 OpenWrt / Linux 上执行（需 root）：</div>
+        <div class="code">${esc(cmd)}</div>
+        <div class="dim" style="font-size:11px">执行完这里会自动出现这台设备；密钥一次性、${esc(String(r.expiresAt ? Math.max(1, Math.round((r.expiresAt - Date.now() / 1000) / 3600)) : 1))} 小时内有效</div>`;
+      mask.querySelector('[data-act="gen"]').textContent = "再生成一条";
     } catch (e) { toast(e.message, true); }
   };
 }
