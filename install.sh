@@ -67,9 +67,14 @@ YAML
   echo "    已生成（含随机 AWA_SECRET）"
 fi
 
-say "==> 4/5 拉取镜像并启动"
-$DC pull -q || warn "    拉取失败，尝试本地构建"
-$DC up -d
+say "==> 4/5 启动"
+if [ -f docker/Dockerfile ]; then
+  echo "    检测到源码目录，本地构建镜像（首次约 1 分钟）"
+  $DC up -d --build
+else
+  $DC pull -q || warn "    拉取镜像失败，请确认镜像名或网络"
+  $DC up -d
+fi
 
 say "==> 5/5 等待就绪"
 i=0

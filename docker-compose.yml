@@ -1,6 +1,6 @@
 services:
   awamesh:
-    image: ghcr.io/OWNER/awamesh:latest
+    image: ghcr.io/awahello/awamesh:latest
     build:
       context: .
       dockerfile: docker/Dockerfile
