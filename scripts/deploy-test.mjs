@@ -80,6 +80,39 @@ try {
   r = await call("/api/wg/profile", { method: "POST", body: JSON.stringify({ mode: "builtin", endpoint: "" }) });
   check("自动模式保存并自动推导 Endpoint", r.status === 200 && r.body.mode === "builtin" && !!r.body.endpoint, r.text.slice(0, 140));
 
+  // 反代 / Cloudflare 后面的场景：命令里必须是 https + 外部域名，且不能带容器端口
+  r = await call(`/api/devices/${id}/deploy`, {
+    method: "POST",
+    body: "{}",
+    headers: { "X-Forwarded-Proto": "https", "X-Forwarded-Host": "mesh.example.com", "CF-Ray": "test" },
+  });
+  check(
+    "反代后生成的命令用 https 且不带端口",
+    r.body.command.includes("https://mesh.example.com/dp/") && !r.body.command.includes(":18443"),
+    r.body.command
+  );
+
+  r = await call("/api/settings/public-url", { method: "POST", body: JSON.stringify({ url: "https://awamesh.example.com" }) });
+  check("可设置对外地址", r.status === 200, r.text.slice(0, 80));
+
+  r = await call(`/api/devices/${id}/deploy`, { method: "POST", body: "{}" });
+  check("对外地址优先生效", r.body.command.includes("https://awamesh.example.com/dp/"), r.body.command);
+
+  await call("/api/settings/public-url", { method: "POST", body: JSON.stringify({ url: "" }) });
+
+  r = await call(`/api/devices/${id}/deploy`, { method: "POST", body: "{}" });
+  const t3 = r.body.token;
+
+  await call(`/api/devices/${id}/revoke`, { method: "POST", body: "{}" });
+  r = await call("/api/join/state?format=shell", { headers: { Authorization: `Bearer ${t3}`, "Content-Type": "text/plain" } });
+  check("吊销后节点拉状态得到 401（触发自清理）", r.status === 401, r.status);
+
+  r = await call(`/api/devices/${id}/delete`, { method: "POST", body: "{}" });
+  check("可彻底删除设备", r.status === 200, r.text.slice(0, 80));
+
+  r = await call("/api/join/state?format=shell", { headers: { Authorization: `Bearer ${t3}`, "Content-Type": "text/plain" } });
+  check("删除后凭据立即失效", r.status === 401, r.status);
+
 } finally {
   child.kill();
   await sleep(200);

@@ -133,6 +133,36 @@ awamesh 自己就是 WireGuard 服务端：密钥、地址、对端全部由控�
 
 **没公网也能跑**：节点主动出站连控制台，映射照样建立；跨节点流量经控制台转发（内置中转）。UDP 走不通就落到 Tailscale（443）。
 
+### 走 Cloudflare / Nginx 反代时：一定要填「对外地址」
+
+界面上访问用的是 `https://awamesh.example.com`（443，无反代端口），但控制台内部监听的是 18443。生成部署命令时如果拼上 `:18443`，节点那边必然 `Connection timed out` —— **Cloudflare 只代理 80/8080/443/2053/2083/2087/8443 这些端口，18443 不在其中**。
+
+v0.3.2 起会自动识别 `X-Forwarded-Proto` / `X-Forwarded-Host` / `CF-Ray`，反代后面生成的命令就是：
+
+```sh
+curl -fsSL --connect-timeout 10 'https://awamesh.example.com/dp/dp_xxx' | sh -s -- --iface awa0
+```
+
+不确定就手动钉死：**设置 → 对外地址** 填 `https://awamesh.akkdiy.cn`，点「测一下」它会从浏览器真实请求一次 `/api/health`。之后所有下发的命令（Linux / Windows / 兜底配置）都用这个地址。
+
+> 反代要放行这些路径：`/dp/*`、`/join.sh`、`/api/health`、`/api/deploy/*`、`/api/join/*`。整站转发即可，它们都在同一个端口上。
+
+### 删除设备时，受控端会自己清干净
+
+| 操作 | 控制台 | 节点（≤60 秒内） |
+|---|---|---|
+| 吊销 | 移除对端、作废凭据、标记 revoked | 拉状态收到 401 → 关接口、删 `/etc/wireguard/awa0.conf`、删 token、停并删 timer/cron、删 `/usr/local/bin/awa-peers` |
+| 删除 | 连记录、密钥、事件一起清掉 | 同上（凭据立即失效） |
+
+清理是全自动的，因为节点每 60 秒会拉一次期望状态，凭据失效的那一刻就是它执行"自毁"的时刻。日志会写：
+
+```
+awamesh: 凭据已失效（设备在控制台被删除或吊销），正在清理本机配置
+awamesh: 已清理（接口、配置、定时器、凭据都已移除）
+```
+
+不想留任何痕迹就点「删除」；只想临时踢下线、还要保留历史就点「吊销」。
+
 ### 端口不会顶掉你已有的服务
 
 | 端口 | 默认 | 冲突时 |

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cfg, log } from "./config.js";
-import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig, splitRoutes, deployTailscale } from "./api.js";
+import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig, splitRoutes, deployTailscale, publicBase } from "./api.js";
 import { seedIfEmpty, pruneEvents, addEvent, demoHeartbeat, clearDemo } from "./db.js";
 import {
   ensureAdminCredential, verifyCredential, sessionToken, validSession,
@@ -69,8 +69,8 @@ async function readBody(req, limit = 256 * 1024) {
   });
 }
 
-function joinScript(key) {
-  const server = cfg.controlUrl || `http://${hostOfControl()}`;
+function joinScript(key, _hostname, base) {
+  const server = base || cfg.controlUrl || `http://${hostOfControl()}`;
   return `#!/bin/sh
 # awamesh 一键接入：本地生成密钥，只把公钥交给控制台
 # 用法：curl -fsSL '${server}/join.sh?key=KEY' | sh -s -- [--hostname NAME] [--iface awa0]
@@ -178,8 +178,29 @@ PUBIP="\$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
 [ -n "\$PUBIP" ] && curl -fsS -X POST "\$SERVER/api/join/hit" \
   -H "Authorization: Bearer \$TOKEN" -H 'Content-Type: application/json' \
   -d "{\"endpoint\":\"\$PUBIP:$(wg show \$IFACE listen-port 2>/dev/null || echo 51820)\"}" >/dev/null 2>&1 || true
-curl -fsS -H "Authorization: Bearer \$TOKEN" "\$SERVER/api/join/state?format=shell" 2>/dev/null \
-  | while read -r kind a b c _rest; do
+CODE="\$(curl -sS -o /tmp/awa.state -w '%{http_code}' --max-time 10 \\
+  -H "Authorization: Bearer \$TOKEN" "\$SERVER/api/join/state?format=shell" 2>/dev/null || echo 000)"
+
+case "\$CODE" in
+  200) : ;;
+  401|403)
+    echo "awamesh: 凭据已失效（设备在控制台被删除或吊销），正在清理本机配置" >&2
+    command -v wg-quick >/dev/null 2>&1 && wg-quick down "\$IFACE" >/dev/null 2>&1 || true
+    ip link del "\$IFACE" >/dev/null 2>&1 || true
+    rm -f /etc/wireguard/"\$IFACE.conf" /etc/wireguard/awa.token /etc/wireguard/awa.iface
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl disable --now awa-peers.timer >/dev/null 2>&1 || true
+      rm -f /etc/systemd/system/awa-peers.timer /etc/systemd/system/awa-peers.service
+      systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    command -v crontab >/dev/null 2>&1 && { crontab -l 2>/dev/null | grep -v awa-peers | crontab - 2>/dev/null || true; }
+    rm -f /usr/local/bin/awa-peers
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+
+while read -r kind a b c _rest; do
       case "\$kind" in
         PEER)
           if [ -n "\$c" ] && [ "\$c" != "-" ]; then
@@ -195,7 +216,8 @@ curl -fsS -H "Authorization: Bearer \$TOKEN" "\$SERVER/api/join/state?format=she
           fi
           ;;
       esac
-    done
+    done < /tmp/awa.state
+rm -f /tmp/awa.state
 PEERS
   chmod +x /usr/local/bin/awa-peers
 
@@ -380,7 +402,7 @@ const server = http.createServer(async (req, res) => {
     const dp = p.match(/^\/dp\/(dp_[a-z0-9]{8,})$/i);
     if (dp && req.method === "GET") {
       const tpl = fs.readFileSync(new URL("./assets/deploy.sh", import.meta.url), "utf8");
-      const base = (cfg.controlUrl || `http://${req.headers.host || "127.0.0.1:" + cfg.port}`).replace(/\/$/, "");
+      const base = publicBase(req);
       const body = tpl.replace(/\r\n/g, "\n").split("@@SERVER@@").join(base).split("@@TOKEN@@").join(dp[1]);
       res.writeHead(200, { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "no-store" });
       return res.end(body);
@@ -399,7 +421,7 @@ const server = http.createServer(async (req, res) => {
     const dpWin = p.match(/^\/dp\/(dp_[a-z0-9]{8,})\/windows$/i);
     if (dpWin && req.method === "GET") {
       const tpl = fs.readFileSync(new URL("./assets/deploy.ps1", import.meta.url), "utf8");
-      const base = (cfg.controlUrl || `http://${req.headers.host || "127.0.0.1:" + cfg.port}`).replace(/\/$/, "");
+      const base = publicBase(req);
       const body = tpl.replace(/\r\n/g, "\n").split("@@SERVER@@").join(base).split("@@TOKEN@@").join(dpWin[1]);
       res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
       return res.end(body);
@@ -408,7 +430,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/deploy/config" && req.method === "GET") {
       const token = url.searchParams.get("token") || "";
       if (!/^dp_[a-z0-9]{8,}$/i.test(token)) return json(res, 400, { error: "凭据格式不正确" });
-      const r = deployConfig(token, req.headers.host || "");
+      const r = deployConfig(token, req);
       res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
       return res.end(r.config);
     }
@@ -417,7 +439,7 @@ const server = http.createServer(async (req, res) => {
       const key = url.searchParams.get("key") || "";
       if (!/^awa_[a-f0-9]{8,}$/.test(key)) return json(res, 400, { error: "密钥格式不正确" });
       res.writeHead(200, { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "no-store" });
-      return res.end(joinScript(key, url.searchParams.get("hostname") || ""));
+      return res.end(joinScript(key, url.searchParams.get("hostname") || "", publicBase(req)));
     }
 
     if (p === "/api/health") return json(res, 200, { ok: true, version: cfg.version });

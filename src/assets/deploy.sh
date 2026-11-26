@@ -156,8 +156,33 @@ if [ -n "$PUBIP" ]; then
     -H 'Content-Type: application/json' \
     -d "{\"endpoint\":\"$PUBIP:$(wg show "$IFACE" listen-port 2>/dev/null || echo 51820)\"}" >/dev/null 2>&1 || true
 fi
-curl -fsS -H "Authorization: Bearer $TOKEN" "$SERVER/api/join/state?format=shell" 2>/dev/null \
-  | while read -r kind a b c _rest; do
+CODE="$(curl -sS -o /tmp/awa.state -w '%{http_code}' --max-time 10 \
+  -H "Authorization: Bearer $TOKEN" "$SERVER/api/join/state?format=shell" 2>/dev/null || echo 000)"
+
+case "$CODE" in
+  200) : ;;
+  401|403)
+    # 控制台已删除/吊销这台设备：把本机配置一并清掉，不留残余
+    echo "awamesh: 凭据已失效（设备在控制台被删除或吊销），正在清理本机配置" >&2
+    command -v wg-quick >/dev/null 2>&1 && wg-quick down "$IFACE" >/dev/null 2>&1 || true
+    ip link del "$IFACE" >/dev/null 2>&1 || true
+    rm -f /etc/wireguard/"$IFACE.conf" /etc/wireguard/awa.token /etc/wireguard/awa.iface
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl disable --now awa-peers.timer >/dev/null 2>&1 || true
+      rm -f /etc/systemd/system/awa-peers.timer /etc/systemd/system/awa-peers.service
+      systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    command -v crontab >/dev/null 2>&1 && { crontab -l 2>/dev/null | grep -v awa-peers | crontab - 2>/dev/null || true; }
+    rm -f /usr/local/bin/awa-peers
+    echo "awamesh: 已清理（接口、配置、定时器、凭据都已移除）" >&2
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+
+while read -r kind a b c _rest; do
       case "$kind" in
         PEER)
           # a=公钥 b=allowed-ips（含网关发布的网段） c=endpoint 或 -
@@ -176,7 +201,8 @@ curl -fsS -H "Authorization: Bearer $TOKEN" "$SERVER/api/join/state?format=shell
           fi
           ;;
       esac
-    done
+    done < /tmp/awa.state
+rm -f /tmp/awa.state
 PEERS
 printf '%s' "$IFACE" > /etc/wireguard/awa.iface
 chmod +x /usr/local/bin/awa-peers

@@ -141,6 +141,7 @@ export function peersForNode(nodeToken) {
   const hash = crypto.createHash("SHA256").update(String(nodeToken || "")).digest("hex");
   const self = db.prepare("SELECT * FROM devices d WHERE d.node_token = ?").get(hash);
   if (!self) throw Object.assign(new Error("节点凭据无效"), { status: 401 });
+  if (self.revoked_at) throw Object.assign(new Error("该设备已吊销，请清理本机配置"), { status: 401 });
 
   const rows = db.prepare(`
     SELECT d.id, d.name, d.mesh_ip, d.endpoint, d.wg_port, d.routes, d.roles, p.public_key
@@ -279,6 +280,32 @@ export async function wgCheck() {
   };
 }
 
+
+/**
+ * 生成部署命令用的「对外地址」。
+ * 反代/CF 后面时绝不能拼容器端口——CF 只代理 80/443/8443 等少数端口，拼 18443 必然超时。
+ * 优先级：设置里的 public_url > AWA_CONTROL_URL > 请求的 X-Forwarded-* / Host
+ */
+export function publicBase(req) {
+  const fixed = (setting("public_url") || cfg.controlUrl || "").trim();
+  if (fixed) return fixed.replace(/\/+$/, "");
+
+  const h = req?.headers || {};
+  const xfProto = String(h["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+  const proto = xfProto || (req?.socket?.encrypted ? "https" : "http");
+  const host = String(h["x-forwarded-host"] || h.host || "").trim();
+  if (!host) return `http://127.0.0.1:${cfg.port}`;
+
+  const hasPort = /:\d+$/.test(host);
+  const viaProxy = !!xfProto || !!h["x-forwarded-for"] || !!h["x-forwarded-host"] || !!h["cf-connecting-ip"] || !!h["cf-ray"];
+
+  // 反代/CF：外部已经是 443，不能再加端口
+  if (viaProxy && !hasPort) return `${proto}://${host}`;
+  if (hasPort) return `${proto}://${host}`;
+  if (proto === "https") return `https://${host}`;
+  return `http://${host}:${cfg.port}`;
+}
+
 /** 有效 Endpoint：设置里的 > AWA_PUBLIC_HOST > 请求 Host 推导 */
 export function effectiveEndpoint(host) {
   const bk = backend();
@@ -291,14 +318,14 @@ export function effectiveEndpoint(host) {
 }
 
 /** 一键部署：签发长期部署凭据（可吊销），返回一条可直接执行的命令 */
-export async function deployInfo(deviceId, host) {
+export async function deployInfo(deviceId, req) {
   const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(deviceId);
   if (!dev) throw Object.assign(new Error("设备不存在"), { status: 404 });
   if (dev.revoked_at) throw new Error("该设备已吊销，请先删除后重新添加");
   const peer = db.prepare("SELECT * FROM wg_peers WHERE device_id = ?").get(deviceId);
   if (!peer) throw new Error("该设备没有密钥记录");
 
-  const endpoint = effectiveEndpoint(host);
+  const endpoint = effectiveEndpoint(req?.headers?.host || "");
   if (!endpoint) {
     throw new Error("还没填 Endpoint：设置 → WireGuard 服务端，填这台机器的公网地址:51820（或给容器加 AWA_PUBLIC_HOST）");
   }
@@ -307,8 +334,8 @@ export async function deployInfo(deviceId, host) {
   db.prepare("UPDATE devices SET node_token = ?, endpoint = endpoint WHERE id = ?")
     .run(crypto.createHash("SHA256").update(token).digest("hex"), deviceId);
 
-  const base = (cfg.controlUrl || `http://${String(host || "").split(":")[0]}:${cfg.port}`).replace(/\/$/, "");
-  const command = `curl -fsSL '${base}/dp/${token}' | sh -s -- --iface awa0`;
+  const base = publicBase(req);
+  const command = `curl -fsSL --connect-timeout 10 '${base}/dp/${token}' | sh -s -- --iface awa0`;
 
   // 已经被控时顺手把对端补进本机接口（重建过容器也不会漏）
   let applied = false;
@@ -321,7 +348,7 @@ export async function deployInfo(deviceId, host) {
 }
 
 /** 部署脚本取配置：凭 token 换完整 wg 配置 */
-export function deployConfig(token, host) {
+export function deployConfig(token, req) {
   const hash = crypto.createHash("SHA256").update(String(token || "")).digest("hex");
   const dev = db.prepare("SELECT * FROM devices WHERE node_token = ?").get(hash);
   if (!dev) throw Object.assign(new Error("部署凭据无效"), { status: 401 });
@@ -331,7 +358,7 @@ export function deployConfig(token, host) {
 
   const bk = backend();
   const pf = (typeof bk.profile === "function") ? (bk.profile() || {}) : {};
-  const endpoint = effectiveEndpoint(host);
+  const endpoint = effectiveEndpoint(req?.headers?.host || "");
   if (!endpoint) throw Object.assign(new Error("控制台未设置 Endpoint"), { status: 400 });
   const subnet = pf.subnet || cfg.meshCidr;
 
@@ -485,6 +512,14 @@ export async function api(req, res, url, body) {
     return { ok: true };
   }
 
+  if (url.pathname === "/api/settings/public-url" && method === "POST") {
+    const v = String(body?.url || "").trim().replace(/\/+$/, "");
+    if (v && !/^https?:\/\/[^\s]+$/.test(v)) throw new Error("要写成 https://域名（不要带路径）");
+    setting("public_url", v);
+    addEvent("settings", v ? `对外地址设为 ${v}` : "对外地址已清空（改为自动推导）");
+    return { ok: true, publicUrl: v };
+  }
+
   if (url.pathname === "/api/wg/profile" && method === "GET") {
     if (typeof be.profile !== "function") throw new Error("当前后端不是 wg");
     const { serverPriv, ...rest } = be.profile();
@@ -635,7 +670,23 @@ ingress:
   }
 
   if (seg[0] === "devices" && seg[2] === "deploy" && method === "POST") {
-    return deployInfo(seg[1], req.headers?.host || "");
+    return deployInfo(seg[1], req);
+  }
+
+
+  // 彻底删除设备（与吊销不同：连记录和凭据一起清掉）
+  if (seg[0] === "devices" && seg[2] === "delete" && method === "POST") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+    const peer = db.prepare("SELECT * FROM wg_peers WHERE device_id = ?").get(seg[1]);
+    if (peer?.public_key && isManaged()) {
+      try { await wg.removePeer(peer.public_key); } catch { /* 忽略 */ }
+    }
+    db.prepare("DELETE FROM wg_peers WHERE device_id = ?").run(seg[1]);
+    db.prepare("DELETE FROM devices WHERE id = ?").run(seg[1]);
+    db.prepare("DELETE FROM events WHERE device_id = ?").run(seg[1]);
+    addEvent("device", `已删除设备 ${dev.name}（节点下次同步时会自动清理本机配置）`);
+    return { ok: true };
   }
 
   if (seg[0] === "devices" && seg[2] === "rename" && method === "POST") {
@@ -844,6 +895,7 @@ ingress:
       controlUrl: cfg.controlUrl,
       relayPort: cfg.relayPort,
       dataDir: cfg.dataDir,
+      publicUrl: setting("public_url") || cfg.controlUrl || "",
       allowCidr: cfg.allowCidr || "",
       trustProxy: cfg.trustProxy,
       sessionDays: cfg.sessionDays,

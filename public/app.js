@@ -267,6 +267,12 @@ async function viewDevices(main) {
         openPublish(dev);
         return;
       }
+      if (b.dataset.op === "del") {
+        if (!confirm(`彻底删除 ${dev.name}？\n\n控制台记录、密钥、事件都会清掉；\n该节点下次同步（≤60 秒）会自动把本机接口、配置、定时器一并删干净。`)) return;
+        try { await api(`/api/devices/${encodeURIComponent(id)}/delete`, { method: "POST", body: "{}" }); toast("已删除，节点将在 60 秒内自清理"); renderView(); }
+        catch (e) { toast(e.message, true); }
+        return;
+      }
       if (b.dataset.op === "revoke") {
         if (!confirm(`吊销 ${dev.name}？该设备会立即断网，只能重新加入。`)) return;
         try { await api(`/api/devices/${encodeURIComponent(id)}/revoke`, { method: "POST", body: "{}" }); toast("已吊销"); renderView(); }
@@ -300,6 +306,7 @@ function rowDevice(x) {
       <button class="btn sm" data-dev="${esc(x.id)}" data-op="conf">配置</button>
       <button class="btn sm" data-dev="${esc(x.id)}" data-op="rename">改名</button>
       <button class="btn sm danger" data-dev="${esc(x.id)}" data-op="revoke">吊销</button>
+      <button class="btn sm danger" data-dev="${esc(x.id)}" data-op="del">删除</button>
     </div>
   </div>`;
 }
@@ -535,9 +542,23 @@ async function viewSettings(main) {
           <div class="dim">数据目录</div><div class="mono">${esc(s.dataDir)}</div>
           <div class="dim">控制面地址</div><div class="mono">${esc(s.controlUrl || "未设置")}</div>
           <div class="dim">WireGuard</div><div>${s.wgManaged ? `已托管 · ${esc(s.wgIface)} · ${s.wgPeers} 个对端` : `<span style="color:var(--warn)">未托管（手动模式）</span>`}</div>
+          <div class="dim">对外地址</div><div class="mono">${esc(s.publicUrl || "自动（按访问地址推导）")}</div>
         </div>
       </div>
 
+      <div class="card">
+        <div class="card-h"><b>对外地址</b><span>部署命令里用的地址</span></div>
+        <p class="dim" style="font-size:11px;margin:0 0 8px">
+          走 Cloudflare / Nginx 反代时，控制台看到的 Host 不带端口，但生成的部署命令必须用你真正能访问的地址。
+          留空 = 按请求自动推导；建议填成你的域名。
+        </p>
+        <input id="publicUrlInput" value="${esc(s.publicUrl || "")}" placeholder="https://awamesh.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+        <div style="display:flex;gap:8px">
+          <button class="btn primary" id="savePublicUrl">保存</button>
+          <button class="btn" id="testPublicUrl">测一下</button>
+        </div>
+        <div id="publicUrlOut"></div>
+      </div>
       <div class="card">
         <div class="card-h"><b>安全</b><span>面板访问控制</span></div>
         <div class="rows" style="margin-bottom:10px">
@@ -756,6 +777,26 @@ async function viewSettings(main) {
       toast("已修改，请用新口令重新登录");
       setTimeout(() => location.reload(), 900);
     } catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#savePublicUrl").onclick = async () => {
+    try {
+      await api("/api/settings/public-url", { method: "POST", body: JSON.stringify({ url: main.querySelector("#publicUrlInput").value }) });
+      toast("已保存，之后生成的部署命令都用这个地址");
+      renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#testPublicUrl").onclick = async () => {
+    const out = main.querySelector("#publicUrlOut");
+    const url = (main.querySelector("#publicUrlInput").value || "").replace(/\/+$/, "");
+    if (!url) { out.innerHTML = '<div class="dim" style="font-size:11px">先填一个地址</div>'; return; }
+    out.innerHTML = '<div class="dim" style="font-size:11px;margin-top:8px">测试中…</div>';
+    try {
+      const r = await fetch(url + "/api/health", { cache: "no-store" });
+      const j = await r.json();
+      out.innerHTML = `<div style="font-size:11.5px;margin-top:8px;color:var(--ok)">可达 · 版本 ${esc(j.version || "?")}（节点会用这个地址拉配置）</div>`;
+    } catch (e) {
+      out.innerHTML = `<div style="font-size:11.5px;margin-top:8px;color:var(--bad)">不可达：${esc(e.message)}（浏览器能测通，节点那边才一定能连）</div>`;
+    }
   };
   main.querySelector("#saveTs").onclick = async () => {
     try {
