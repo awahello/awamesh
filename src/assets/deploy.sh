@@ -39,7 +39,7 @@ if ! command -v wg >/dev/null 2>&1; then
   elif command -v yum >/dev/null 2>&1; then
     yum install -y wireguard-tools >/dev/null 2>&1
   elif command -v opkg >/dev/null 2>&1; then
-    opkg update >/dev/null 2>&1; opkg install kmod-tun wireguard-tools >/dev/null 2>&1
+    opkg update >/dev/null 2>&1; opkg install kmod-wireguard wireguard-tools >/dev/null 2>&1 || opkg install wireguard-tools >/dev/null 2>&1
   fi
 fi
 command -v wg >/dev/null 2>&1 || die "这台机器装不上 wireguard-tools，请先手动安装（或换一台机器）"
@@ -57,7 +57,41 @@ fi
 ADDR="$(sed -n 's/^Address = \(.*\)$/\1/p' "$CONF" | head -1)"
 
 say "3/5 启动接口 $IFACE"
-if command -v wg-quick >/dev/null 2>&1; then
+if [ -f /etc/config/network ] && command -v uci >/dev/null 2>&1; then
+  # ---- OpenWrt：写 UCI，交给 /etc/init.d/network（原生方式，不用 ip-full）----
+  say "    OpenWrt 检测到：用 UCI 配置 $IFACE"
+  PRIV="$(sed -n 's/^PrivateKey = //p' "$CONF" | head -1)"
+  PUB="$(sed -n 's/^PublicKey = //p' "$CONF" | head -1)"
+  EP="$(sed -n 's/^Endpoint = //p' "$CONF" | head -1)"
+  MTU_C="$(sed -n 's/^MTU = //p' "$CONF" | head -1)"
+  ALLOWED="$(sed -n 's/^AllowedIPs = //p' "$CONF" | head -1)"
+  EPHOST="${EP%:*}"; EPPORT="${EP##*:}"
+
+  uci -q delete network.awa0 >/dev/null 2>&1 || true
+  uci -q delete network.wgawa0 >/dev/null 2>&1 || true
+  uci set network.awa0=interface
+  uci set network.awa0.proto='wireguard'
+  uci set network.awa0.private_key="$PRIV"
+  uci add_list network.awa0.addresses="$ADDR"
+  [ -n "$MTU_C" ] && uci set network.awa0.mtu="$MTU_C"
+
+  uci set network.wgawa0=wireguard_awa0
+  uci set network.wgawa0.description='awamesh'
+  uci set network.wgawa0.public_key="$PUB"
+  uci set network.wgawa0.endpoint_host="$EPHOST"
+  uci set network.wgawa0.endpoint_port="$EPPORT"
+  uci set network.wgawa0.persistent_keepalive='25'
+  echo "$ALLOWED" | tr ',' '\n' | while read -r cidr; do
+    cidr="$(echo "$cidr" | tr -d ' ')"
+    [ -n "$cidr" ] && uci add_list network.wgawa0.allowed_ips="$cidr"
+  done
+  uci commit network
+  /etc/init.d/network reload >/dev/null 2>&1 || /etc/init.d/network restart >/dev/null 2>&1 || true
+  sleep 3
+  if ! ip addr show "$IFACE" >/dev/null 2>&1; then
+    die "UCI 配置已写入但接口没起来：检查 opkg 是否装了 kmod-wireguard（opkg install kmod-wireguard）"
+  fi
+elif command -v wg-quick >/dev/null 2>&1; then
   wg-quick down "$IFACE" >/dev/null 2>&1 || true
   wg-quick up "$IFACE" || die "wg-quick 启动失败（看上面的报错；内核无 wireguard 模块时先 modprobe wireguard）"
 else
@@ -165,6 +199,12 @@ case "$CODE" in
     # 控制台已删除/吊销这台设备：把本机配置一并清掉，不留残余
     echo "awamesh: 凭据已失效（设备在控制台被删除或吊销），正在清理本机配置" >&2
     command -v wg-quick >/dev/null 2>&1 && wg-quick down "$IFACE" >/dev/null 2>&1 || true
+    if [ -f /etc/config/network ] && command -v uci >/dev/null 2>&1; then
+      uci -q delete network.awa0 >/dev/null 2>&1 || true
+      uci -q delete network.wgawa0 >/dev/null 2>&1 || true
+      uci commit network >/dev/null 2>&1 || true
+      /etc/init.d/network reload >/dev/null 2>&1 || true
+    fi
     ip link del "$IFACE" >/dev/null 2>&1 || true
     rm -f /etc/wireguard/"$IFACE.conf" /etc/wireguard/awa.token /etc/wireguard/awa.iface
     if command -v systemctl >/dev/null 2>&1; then

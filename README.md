@@ -673,19 +673,18 @@ docker compose logs --tail 50 awamesh
 
 ```mermaid
 flowchart TB
-  B["浏览器（面板）"]
+  B["浏览器（面板）<br/>https://你的域名 或 内网 IP:18443"]
 
   subgraph CTL["控制台（1 台：VPS 或 NAS）"]
-    A["awamesh<br/>Node 22 + SQLite<br/>面板 / 编排 / 观测"]
-    H["Headscale（可选）<br/>注册 · 密钥 · 路由批准"]
-    A -->|"CLI / 适配层"| H
+    A["awamesh<br/>Node 22 + SQLite<br/>面板 / 编排 / 观测 / 备份"]
+    S["内置 WireGuard 服务端<br/>awa0 · 10.88.0.1/24 · udp 51820<br/>（容器内自己起，不依赖 Headscale）"]
+    A --- S
   end
 
   subgraph LNX["Linux 机队（N 台 VPS）"]
     S1["seoul-vps<br/>节点 + 中继"]
     S2["hk-edge<br/>节点 + 中继"]
-    S3["db-01<br/>节点"]
-    S4["其它 Linux<br/>节点 / 网段网关 / 出口"]
+    S3["db-01<br/>节点 / 网关"]
   end
 
   subgraph HOME["家里（大陆）"]
@@ -694,33 +693,26 @@ flowchart TB
 
   W["win-laptop · Windows<br/>节点"]
 
-  subgraph CF["Cloudflare"]
-    E["边缘 / DNS<br/>TLS · CDN"]
-    T1["隧道 · blog.example.com"]
-    T2["隧道 · rule.example.com"]
+  subgraph CF["Cloudflare 边缘"]
+    E["DNS · TLS 终止 · CDN 缓存"]
+    T["隧道（cloudflared 主动出站）"]
   end
 
-  B -->|HTTPS| A
-  A -.->|"只读同步：隧道 / ingress"| CF
+  V["公网访客"]
 
-  H ---|下发密钥与中继地图| S1
-  H ---|下发密钥与中继地图| S2
-  H ---|下发密钥与中继地图| S3
-  H ---|下发密钥与中继地图| R
-  H ---|下发密钥与中继地图| W
+  B ==>|HTTPS 443| A
+  A -.->|"只读同步：隧道 / ingress 对账"| CF
 
-  R <-->|"WG 直连（P2P）"| S1
-  R <-->|"WG 直连"| S2
-  R <-->|"WG 直连"| W
-  S3 -.->|"打洞失败 → 中继"| S1
-  S4 -.->|"打洞失败 → 中继"| S2
+  S <==>|"WG 直连（P2P）"| S1
+  S <==>|"WG 直连"| S2
+  S <==>|"WG 直连"| S3
+  S <==>|"WG 直连"| R
+  S <==>|"WG 直连"| W
 
-  R ---|cloudflared| T1
-  R ---|cloudflared| T2
-  T1 --- E
-  T2 --- E
-  E --- V["公网访客"]
-```
+  R -->|"cloudflared（也可放在任意一台 mesh 机器上）"| T
+  T --> E
+  E --> V
+  V -.->|"访问 blog.example.com"| E```
 
 **四种角色，一台机器可叠加**
 
