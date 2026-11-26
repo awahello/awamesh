@@ -1,34 +1,38 @@
 :root {
-  --bg: #fbfbfa;
+  --bg: #f6f9f9;
   --surface: #ffffff;
-  --surface-2: #f4f4f2;
-  --line: rgba(0, 0, 0, 0.09);
-  --line-strong: rgba(0, 0, 0, 0.16);
-  --text: #17171a;
-  --text-2: #6b6b70;
-  --text-3: #9a9a9f;
-  --ok: #1d9e75;
-  --warn: #ba7517;
-  --bad: #d4536a;
-  --info: #378add;
+  --surface-2: #edf3f3;
+  --line: rgba(9, 40, 44, 0.10);
+  --line-strong: rgba(9, 40, 44, 0.18);
+  --text: #0e2126;
+  --text-2: #52646b;
+  --text-3: #8698a0;
+  --ok: #0f9d76;
+  --warn: #bd7713;
+  --bad: #d1506a;
+  --info: #0d89a6;
+  --accent: #0d7f8f;
+  --accent-soft: rgba(13, 127, 143, 0.10);
   --radius: 10px;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #151517;
-    --surface: #1c1c1f;
-    --surface-2: #232327;
-    --line: rgba(255, 255, 255, 0.1);
-    --line-strong: rgba(255, 255, 255, 0.18);
-    --text: #f2f2f4;
-    --text-2: #a1a1a8;
-    --text-3: #75757c;
-    --ok: #5dcaa5;
-    --warn: #ef9f27;
-    --bad: #ed93b1;
-    --info: #85b7eb;
+    --bg: #0b1216;
+    --surface: #101c21;
+    --surface-2: #16262c;
+    --line: rgba(255, 255, 255, 0.09);
+    --line-strong: rgba(255, 255, 255, 0.17);
+    --text: #e7f1f3;
+    --text-2: #9cb0b6;
+    --text-3: #6d8288;
+    --ok: #4fd1a5;
+    --warn: #e5a340;
+    --bad: #ef8ba3;
+    --info: #4cc4e2;
+    --accent: #23b4c9;
+    --accent-soft: rgba(35, 180, 201, 0.14);
   }
 }
 
@@ -99,7 +103,7 @@ a { color: var(--info); text-decoration: none; }
   white-space: nowrap;
 }
 .btn:hover { background: var(--surface-2); }
-.btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .btn.primary:hover { opacity: 0.88; }
 .btn.danger { color: var(--bad); border-color: var(--bad); }
 .btn.sm { padding: 2px 8px; font-size: 12px; }
@@ -243,3 +247,26 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 /* 模式切换行 */
 .mode-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 10px; }
 .mode-row .btn { font-size: 12px; }
+
+/* 品牌与强调（深海青） */
+.brand b { color: var(--text); letter-spacing: .2px; }
+.brand svg { color: var(--accent); }
+.nav-item.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.side-foot {
+  font-size: 11px;
+  color: var(--text-3);
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  margin-top: auto;
+  line-height: 1.7;
+}
+.side-foot a { color: var(--text-2); text-decoration: none; }
+.side-foot a:hover { color: var(--accent); }
+.copy { color: var(--text-3); }
+.copy a { color: var(--text-3); text-decoration: none; }
+.copy a:hover { color: var(--accent); }

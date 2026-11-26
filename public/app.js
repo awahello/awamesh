@@ -76,7 +76,7 @@ function render() {
       <aside class="side" id="side">
         <div class="brand">${logo(20)}<b>awamesh</b></div>
         ${NAV.map(([k, label]) => `<button class="nav-item ${S.view === k ? "on" : ""}" data-nav="${k}">${label}</button>`).join("")}
-        <div class="side-foot">v${esc(S.version)} · ${esc(S.backend)}${S.backend === "mock" ? `<br><span style="color:var(--warn)">演示数据</span>` : ""}<br><a href="#" data-act="logout">退出登录</a></div>
+        <div class="side-foot">v${esc(S.version)} · ${esc(S.backend)}${S.backend === "mock" ? `<br><span style="color:var(--warn)">演示数据</span>` : ""}<br><a href="#" data-act="logout">退出登录</a><div class="copy">© <a href="https://www.akkdiy.cn" target="_blank" rel="noopener noreferrer">www.akkdiy.cn</a></div></div>
       </aside>
       <main class="main" id="main"></main>
     </div>`;
@@ -588,6 +588,24 @@ async function viewSettings(main) {
           <a class="btn" href="${esc((upd && upd.docs) || "https://github.com/awahello/awamesh")}" target="_blank" rel="noopener noreferrer">版本历史</a>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-h"><b>备份与迁移</b><span>导出 / 导入整份配置</span></div>
+        <p class="dim" style="font-size:11px;margin:0 0 10px">
+          导出包含：设备与对端、中继、隧道、接入密钥、全部设置（<b>不含</b>后端口令）。
+          敏感字段用 <span class="mono">AWA_SECRET</span> 加密，导入端必须用同一个密钥才能解开。
+        </p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="btn primary" id="doExport">导出配置（.json）</button>
+          <input type="file" id="importFile" accept=".json,application/json" style="display:none">
+          <button class="btn" id="pickImport">选择备份文件导入</button>
+          <select id="importMode" style="padding:6px 8px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text)">
+            <option value="replace">覆盖同类数据</option>
+            <option value="merge">只补不覆盖</option>
+          </select>
+        </div>
+        <div id="importOut"></div>
+      </div>
       <div class="card">
         <div class="card-h"><b>安全</b><span>面板访问控制</span></div>
         <div class="rows" style="margin-bottom:10px">
@@ -807,6 +825,44 @@ async function viewSettings(main) {
       toast("已修改，请用新口令重新登录");
       setTimeout(() => location.reload(), 900);
     } catch (e) { toast(e.message, true); }
+  };
+
+  main.querySelector("#doExport").onclick = async () => {
+    try {
+      const r = await fetch("/api/backup/export", { credentials: "same-origin" });
+      if (!r.ok) throw new Error("导出失败：" + r.status);
+      const data = await r.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      const d = new Date();
+      const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+      a.href = URL.createObjectURL(blob);
+      a.download = `awamesh-backup-${stamp}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast("已导出");
+    } catch (e) { toast(e.message, true); }
+  };
+
+  main.querySelector("#pickImport").onclick = () => main.querySelector("#importFile").click();
+  main.querySelector("#importFile").onchange = async (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    const out = main.querySelector("#importOut");
+    try {
+      const text = await file.text();
+      const bundle = JSON.parse(text);
+      const mode = main.querySelector("#importMode").value;
+      const n = (bundle.devices || []).length;
+      const tip = `导入 ${file.name}？\n\n设备 ${n} 台 / 中继 ${(bundle.relays || []).length} 个 / 隧道 ${(bundle.tunnels || []).length} 条\n模式：${mode === "replace" ? "覆盖同类数据" : "只补不覆盖"}\n\n后端口令不会被覆盖。`;
+      if (!confirm(tip)) return;
+      const r = await api("/api/backup/import", { method: "POST", body: JSON.stringify({ bundle, mode }) });
+      out.innerHTML = `<div style="font-size:11.5px;margin-top:10px;color:var(--ok)">导入完成：${esc(JSON.stringify(r.counts || {}))}</div>`;
+      toast("已导入");
+      setTimeout(renderView, 800);
+    } catch (e) {
+      out.innerHTML = `<div style="font-size:11.5px;margin-top:10px;color:var(--bad)">导入失败：${esc(e.message)}</div>`;
+    }
   };
   main.querySelector("#copyUpgrade").onclick = async () => {
     const cmd = "curl -fsSL https://raw.githubusercontent.com/awahello/awamesh/main/upgrade.sh | sh";

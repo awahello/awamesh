@@ -2,6 +2,12 @@
 
 本项目遵循语义化版本；`0.x` 阶段内部结构可能调整，升级前请备份 `data/`。
 
+## 0.4.0
+- 新增备份与迁移：`GET /api/backup/export`、`POST /api/backup/import`（覆盖 / 合并），
+  导出不含后端口令，敏感字段仍由 `AWA_SECRET` 加密
+- 界面重新配色（深海青）：主按钮、导航选中、链接统一走 `--accent`，深浅色各一套
+- 侧栏页脚与 README 加上版权 www.akkdiy.cn
+
 ## 0.3.9
 - **修复**：`docker/entrypoint.sh` 里 `if [ "\${AWA_WG_ENABLE:-1}" = "1" ]` 多了反斜杠，条件恒为假，
   容器一直以 `node`(uid 1000) 运行 → 有效能力被内核清空 → `ip link add ... type wireguard` 报

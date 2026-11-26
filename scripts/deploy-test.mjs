@@ -83,6 +83,17 @@ try {
   r = await call("/api/update/check");
   check("升级检查接口可用", r.status === 200 && !!r.body.current && r.body.command.includes("upgrade.sh"), r.text.slice(0, 120));
 
+  r = await call("/api/backup/export");
+  check("可导出配置", r.status === 200 && r.body.app === "awamesh" && Array.isArray(r.body.devices), r.text.slice(0, 100));
+  check("导出不含后端口令", r.status === 200 && !JSON.stringify(r.body.settings || {}).includes("admin_credential"), "settings 里出现了凭据字段");
+
+  const bundle = r.body;
+  r = await call("/api/backup/import", { method: "POST", body: JSON.stringify({ bundle, mode: "merge" }) });
+  check("可导入（合并模式）", r.status === 200 && r.body.ok === true, r.text.slice(0, 120));
+
+  r = await call("/api/backup/import", { method: "POST", body: JSON.stringify({ app: "other" }) });
+  check("拒绝非 awamesh 备份", r.status >= 400, r.status);
+
   // ---- 中继：接入命令带自检凭据，删除/停用后机器自动卸载 ----
   r = await call("/api/relays", { method: "POST", body: JSON.stringify({ name: "hk-relay", region: "香港", addr: "hk.example.com", port: 18444 }) });
   check("新增中继", r.status === 200 && !!r.body.id, r.text.slice(0, 80));

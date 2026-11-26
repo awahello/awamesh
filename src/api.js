@@ -361,6 +361,67 @@ export async function updateCheck() {
   };
 }
 
+
+/** 导出配置：设备、对端、中继、隧道、接入密钥、设置（不含后端口令） */
+export function exportBundle() {
+  const pick = (t) => db.prepare(`SELECT * FROM ${t}`).all();
+  const skip = new Set(["admin_credential", "session_epoch"]);
+  const settings = {};
+  for (const r of db.prepare("SELECT key, value FROM settings").all()) {
+    if (!skip.has(r.key)) settings[r.key] = r.value;
+  }
+  return {
+    app: "awamesh",
+    version: cfg.version,
+    exportedAt: Math.floor(Date.now() / 1000),
+    note: "enc_* 与 wg-server 相关字段用 AWA_SECRET 加密，导入端必须使用同一个 AWA_SECRET 才能解开",
+    settings,
+    devices: pick("devices"),
+    wgPeers: pick("wg_peers"),
+    relays: pick("relays"),
+    tunnels: pick("tunnels"),
+    authkeys: pick("authkeys"),
+  };
+}
+
+/** 导入配置：replace=覆盖同类数据（默认），merge=只补不覆盖 */
+export function importBundle(bundle, mode = "replace") {
+  if (!bundle || bundle.app !== "awamesh") throw new Error("不是 awamesh 导出的文件");
+  const replace = mode !== "merge";
+  const tables = { devices: bundle.devices, wg_peers: bundle.wgPeers, relays: bundle.relays, tunnels: bundle.tunnels, authkeys: bundle.authkeys };
+  const counts = {};
+
+  const insertRow = (table, row) => {
+    const cols = Object.keys(row).filter(k => row[k] !== undefined);
+    if (!cols.length) return;
+    const sql = `INSERT OR REPLACE INTO ${table} (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`;
+    try { db.prepare(sql).run(...cols.map(k => row[k])); counts[table] = (counts[table] || 0) + 1; } catch { /* 列不匹配就跳过这一行 */ }
+  };
+
+  db.exec("BEGIN");
+  try {
+    for (const [table, rows] of Object.entries(tables)) {
+      if (!Array.isArray(rows)) continue;
+      if (replace) db.prepare(`DELETE FROM ${table}`).run();
+      for (const row of rows) insertRow(table, row);
+    }
+    if (bundle.settings && typeof bundle.settings === "object") {
+      const skip = new Set(["admin_credential", "session_epoch"]); // 永不覆盖后端口令与会话纪元
+      for (const [k, v] of Object.entries(bundle.settings)) {
+        if (skip.has(k)) continue;
+        setting(k, v);
+      }
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw e;
+  }
+
+  addEvent("settings", `导入配置：${Object.entries(counts).map(([k, v]) => k + " " + v).join(" / ") || "仅设置"}（${replace ? "覆盖" : "合并"}）`);
+  return { ok: true, mode: replace ? "replace" : "merge", counts };
+}
+
 /** 有效 Endpoint：设置里的 > AWA_PUBLIC_HOST > 请求 Host 推导 */
 export function effectiveEndpoint(host) {
   const bk = backend();
@@ -652,6 +713,14 @@ export async function api(req, res, url, body) {
     rotateSessions();
     addEvent("auth", "后台口令已修改，所有会话失效");
     return { ok: true };
+  }
+
+  if (url.pathname === "/api/backup/export" && method === "GET") {
+    return exportBundle();
+  }
+
+  if (url.pathname === "/api/backup/import" && method === "POST") {
+    return importBundle(body?.bundle || body, body?.mode === "merge" ? "merge" : "replace");
   }
 
   if (url.pathname === "/api/update/check" && method === "GET") {

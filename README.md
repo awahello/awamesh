@@ -462,6 +462,35 @@ ingress:
 
 ---
 
+## 备份与迁移
+
+控制台里的所有配置（设备、对端、中继、隧道、接入密钥、设置）都能一次性导出，换机器时导入即可：
+
+**设置 → 备份与迁移**：
+
+| 操作 | 说明 |
+|---|---|
+| 导出配置（.json） | 下载 `awamesh-backup-YYYYMMDD.json`；**不含后端口令**，敏感字段（CF Token / Tailscale authkey / 服务端私钥）用 `AWA_SECRET` 加密 |
+| 导入 · 覆盖 | 用备份里同类数据替换当前数据（换机器时选这个） |
+| 导入 · 只补不覆盖 | 保留现有、只补缺失（合并多份备份时用） |
+
+命令行等价：
+
+```bash
+# 导出（Cookie 换成你登录后的）
+curl -s -b "awa_session=..." http://127.0.0.1:18443/api/backup/export -o backup.json
+
+# 导入
+curl -s -b "awa_session=..." -X POST http://127.0.0.1:18443/api/backup/import \
+  -H "Content-Type: application/json" \
+  -d "{\"bundle\": $(cat backup.json), \"mode\": \"replace\"}"
+```
+
+两个必须知道的点：
+
+1. **导入端必须用同一个 `AWA_SECRET`**，否则 `enc_*` 字段解不开（Cloudflare Token、Tailscale authkey、服务端私钥都在里面）。导出文件里已经写了这条说明。
+2. **后端口令永远不会被导入覆盖**，也不会出现在导出文件里 —— 这是故意的，避免备份文件泄露后台。
+
 ## 更新（升级到新版本）
 
 **以后升级都用这一条，不用记版本号：**
@@ -522,7 +551,8 @@ docker compose logs --tail 30 awamesh | grep "\[wg\]"
 
 | 版本 | 主要变化 |
 |---|---|
-| **0.3.9** | 修入口脚本条件写错导致容器永远以非 root 运行（即使 `privileged` 也建不了 `awa0`）；启动日志打印运行身份 uid |
+| **0.4.0** | 备份与迁移（导出/导入整份配置）；全新「深海青」配色；页脚版权 www.akkdiy.cn |
+| 0.3.9 | 修入口脚本条件写错导致容器永远以非 root 运行（即使 `privileged` 也建不了 `awa0`）；启动日志打印运行身份 uid |
 | 0.3.8 | `upgrade.sh` 先校验 compose，自动修复重复的 `privileged` 键（原文件留 `.broken` 备份） |
 | **0.3.7** | 一键升级脚本 `upgrade.sh`；面板「版本与升级」显示最新版本与升级命令 |
 | 0.3.6 | 设备「配置」弹层显示实时握手/收发字节（不用登机器判断通没通） |
@@ -768,6 +798,10 @@ npm run test:security # 18 项：CSP/X-Frame、CSRF、登录限速、改口令�
 控制台空载约 50–60MB；中继几乎不吃 CPU 只吃带宽。
 
 ---
+
+## 版权
+
+界面与代码 © [www.akkdiy.cn](https://www.akkdiy.cn) · MIT License（见下方）
 
 ## License
 
