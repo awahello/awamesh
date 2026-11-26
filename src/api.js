@@ -5,7 +5,7 @@ import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, 
 import crypto from "node:crypto";
 import { wg, isManaged } from "./wgsrv.js";
 import { hostInCidr, clientConfig as clientConfigText } from "./wg.js";
-import { secretSetting, saveSecretSetting } from "./secrets.js";
+import { secretSetting, saveSecretSetting, seal, open as unseal } from "./secrets.js";
 
 const r = (n, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
 
@@ -93,13 +93,11 @@ export async function joinPeer(body) {
   // 节点上报的公网 endpoint（有则记下，用于全网状直连）
   const selfEndpoint = String(body?.endpoint || "").trim().slice(0, 120);
   const wgPort = Number(body?.port || 0) || null;
-  const nodeToken = "nt_" + crypto.randomBytes(16).toString("hex");
+  const nodeToken = issueNodeToken(id, "nt_");
   if (selfEndpoint) {
     db.prepare("UPDATE devices SET endpoint = ?, reported_endpoint = ?, wg_port = ? WHERE id = ?")
       .run(selfEndpoint, selfEndpoint, wgPort, id);
   }
-  db.prepare("UPDATE devices SET node_token = ? WHERE id = ?")
-    .run(crypto.createHash("SHA256").update(nodeToken).digest("hex"), id);
 
   // Endpoint 没填时，用请求 Host 兜底推导（面板域名/IP + wg 端口）
   let endpoint = pf.endpoint || "";
@@ -211,6 +209,23 @@ export async function updateNodeEndpoint(nodeToken, endpoint, port, tsIp) {
 }
 
 
+
+
+/** 生成并落库节点凭据（同时存密文，方便之后原样再展示，不用轮换） */
+function issueNodeToken(deviceId, prefix = "nt_") {
+  const token = prefix + crypto.randomBytes(16).toString("hex");
+  db.prepare("UPDATE devices SET node_token = ?, node_token_sealed = ? WHERE id = ?")
+    .run(crypto.createHash("SHA256").update(token).digest("hex"), seal(token), deviceId);
+  return token;
+}
+
+/** 取回这台设备当前的凭据；没有密文副本（老数据）就新签一个 */
+function currentNodeToken(dev, prefix = "nt_") {
+  const sealed = dev.node_token_sealed ? unseal(dev.node_token_sealed) : "";
+  const hash = crypto.createHash("SHA256").update(sealed || "-").digest("hex");
+  if (sealed && hash === dev.node_token) return { token: sealed, reused: true };
+  return { token: issueNodeToken(dev.id, prefix), reused: false };
+}
 
 /** 把 "192.168.1.0/24, 10.0.0.0/8" 解析成数组 */
 export function splitRoutes(routes) {
@@ -468,9 +483,8 @@ export async function deployInfo(deviceId, req) {
     throw new Error("还没填 Endpoint：设置 → WireGuard 服务端，填这台机器的公网地址:51820（或给容器加 AWA_PUBLIC_HOST）");
   }
 
-  const token = "dp_" + crypto.randomBytes(20).toString("hex");
-  db.prepare("UPDATE devices SET node_token = ?, endpoint = endpoint WHERE id = ?")
-    .run(crypto.createHash("SHA256").update(token).digest("hex"), deviceId);
+  // 关键：不轮换。否则每次点「一键部署」都会把已经接入的节点踢成 401
+  const { token, reused } = currentNodeToken(dev, "dp_");
 
   const base = publicBase(req);
   const command = `curl -fsSL --connect-timeout 10 '${base}/dp/${token}' | sh -s -- --iface awa0`;
@@ -481,8 +495,8 @@ export async function deployInfo(deviceId, req) {
     try { await wg.addPeer(peer.public_key, peer.address); applied = true; } catch { /* ignore */ }
   }
 
-  addEvent("device", `为 ${dev.name} 生成一键部署命令${applied ? "（已自动加入服务端）" : ""}`, deviceId);
-  return { command, endpoint, token, applied, name: dev.name, address: peer.address };
+  addEvent("device", `为 ${dev.name} 生成一键部署命令${reused ? "（凭据沿用，节点无需重装）" : "（已签发新凭据）"}`, deviceId);
+  return { command, endpoint, token, applied, reused, name: dev.name, address: peer.address };
 }
 
 /** 部署脚本取配置：凭 token 换完整 wg 配置 */
@@ -995,6 +1009,19 @@ ingress:
       : `tailscale up --authkey '${p.authkey}' --hostname '${dev.name}-awa' --accept-routes`;
     addEvent("device", `为 ${dev.name} 生成 Tailscale 加入命令`, seg[1]);
     return { command: cmd, installed: !!dev.ts_ip, tsIp: dev.ts_ip || "" };
+  }
+
+
+  // 修复节点凭据：token 被换掉后（或老数据没密文副本）用它把节点救回来
+  if (seg[0] === "devices" && seg[2] === "token" && method === "POST") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+    const { token, reused } = currentNodeToken(dev, "nt_");
+    const base = publicBase(req);
+    const command = `printf '%s' '${token}' > /etc/wireguard/awa.token && chmod 600 /etc/wireguard/awa.token && ` +
+      `curl -fsSL -H "Authorization: Bearer ${token}" '${base}/api/join/peers.sh' | sh`;
+    addEvent("device", `为 ${dev.name} 生成凭据修复命令${reused ? "（沿用现有）" : "（已重新签发）"}`, seg[1]);
+    return { token, reused, command };
   }
 
   if (seg[0] === "devices" && seg[2] === "uninstall" && method === "GET") {

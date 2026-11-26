@@ -88,6 +88,8 @@ try { db.exec("ALTER TABLE devices ADD COLUMN wg_port INTEGER"); } catch {}
 try { db.exec("ALTER TABLE devices ADD COLUMN node_token TEXT"); } catch {}
 // 网关角色：这台机器发布进 mesh 的内网段（逗号分隔的 CIDR）
 try { db.exec("ALTER TABLE devices ADD COLUMN routes TEXT"); } catch {}
+// 节点凭据的密文副本：一键部署时不轮换，避免把已接入的节点踢成 401
+try { db.exec("ALTER TABLE devices ADD COLUMN node_token_sealed TEXT"); } catch {}
 // Tailscale 兜底：节点加入 tailnet 后上报的 100.x 地址
 try { db.exec("ALTER TABLE devices ADD COLUMN ts_ip TEXT"); } catch {}
 try { db.exec("ALTER TABLE devices ADD COLUMN ts_at INTEGER"); } catch {}

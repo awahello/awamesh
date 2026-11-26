@@ -64,10 +64,13 @@ try {
 
   r = await call(`/api/devices/${id}/deploy`, { method: "POST", body: "{}" });
   const token2 = r.body.token;
-  check("重新生成会换掉旧凭据", token2 && token2 !== token, token2);
+  check("重复生成复用同一凭据（不会把已接入节点踢成 401）", token2 && token2 === token, token2);
 
   r = await call(`/api/deploy/config?token=${token}`);
-  check("旧凭据随即失效", r.status === 401, r.text.slice(0, 60));
+  check("旧凭据仍然可用", r.status === 200, r.status);
+
+  r = await call(`/api/devices/${id}/token`, { method: "POST", body: "{}" });
+  check("可生成凭据修复命令", r.status === 200 && r.body.command.includes("/etc/wireguard/awa.token") && r.body.command.includes("/api/join/peers.sh"), r.text.slice(0, 100));
 
   r = await call(`/api/join/peers`, { headers: { Authorization: `Bearer ${token2}`, "Content-Type": "text/plain" } });
   check("部署凭据同时能拉对端表", r.status === 200 && Array.isArray(r.body.peers), r.text.slice(0, 80));

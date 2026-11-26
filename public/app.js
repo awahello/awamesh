@@ -1256,6 +1256,7 @@ async function openDeploy(dev) {
         <button class="btn primary" data-act="copy">复制命令</button>
         <button class="btn" data-act="win">Windows 命令</button>
         <button class="btn" data-act="ts">Tailscale 兜底命令</button>
+        <button class="btn" data-act="fix">修复凭据</button>
       </div>
       <div id="winBox"></div>`;
     mask.querySelector('[data-act="copy"]').onclick = async () => {
@@ -1263,6 +1264,15 @@ async function openDeploy(dev) {
       catch { toast("复制失败，请手动选择", true); }
     };
     const winCmd = "irm '" + location.origin + "/dp/" + r.token + "/windows' | iex";
+    mask.querySelector('[data-act="fix"]').onclick = async () => {
+      try {
+        const t = await api(`/api/devices/${encodeURIComponent(dev.id)}/token`, { method: "POST", body: "{}" });
+        mask.querySelector("#winBox").innerHTML = `
+          <div class="dim" style="font-size:11px;margin-top:10px">这台在节点侧报 401 / 不更新状态时，在它上面跑这条（只换凭据并重装同步脚本，不动接口）：</div>
+          <div class="code">${esc(t.command)}</div>
+          <div class="dim" style="font-size:11px">${t.reused ? "沿用了现有凭据" : "已签发新凭据（旧凭据作废）"}</div>`;
+      } catch (e) { toast(e.message, true); }
+    };
     mask.querySelector('[data-act="ts"]').onclick = async () => {
       try {
         const t = await api(`/api/devices/${encodeURIComponent(dev.id)}/ts-command`, { method: "POST", body: "{}" });
