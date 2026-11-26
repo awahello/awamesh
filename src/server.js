@@ -78,7 +78,7 @@ set -eu
 
 SERVER="\${AWA_SERVER:-${server}}"
 KEY="\${AWA_KEY:-${key}}"
-HOST="$(hostname)"
+HOST=""
 IFACE="awa0"
 
 while [ $# -gt 0 ]; do
@@ -88,6 +88,12 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+
+# 有些 OpenWrt 精简掉 hostname 命令，逐级兜底，别再让脚本因为取不到名字直接退出
+if [ -z "$HOST" ]; then
+  HOST="$(hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || echo node)"
+fi
+[ -n "$HOST" ] || HOST=node
 
 echo "==> 1/4 检查 WireGuard 工具"
 if ! command -v wg >/dev/null 2>&1; then
@@ -119,7 +125,7 @@ if [ -n "$ENDPOINT" ]; then echo "    对端地址 $ENDPOINT"; else echo "    �
 echo "==> 3/4 向控制台申请地址"
 RESP="$(curl -fsS -X POST "$SERVER/api/join?format=shell" \
   -H 'Content-Type: application/json' \
-  -d "{\"token\":\"$KEY\",\"pubkey\":\"$PUB\",\"hostname\":\"$HOST\",\"endpoint\":\"$ENDPOINT\",\"port\":$WGPORT}")" || {
+  -d "{\\\"token\\\":\\\"$KEY\\\",\\\"pubkey\\\":\\\"$PUB\\\",\\\"hostname\\\":\\\"$HOST\\\",\\\"endpoint\\\":\\\"$ENDPOINT\\\",\\\"port\\\":$WGPORT}")" || {
   echo "    申请失败，通常是密钥已被使用或过期：$RESP"; exit 1; }
 
 for kv in $RESP; do
@@ -155,7 +161,61 @@ CONF="/etc/wireguard/$IFACE.conf"
 } > "$CONF"
 chmod 600 "$CONF"
 
-if command -v wg-quick >/dev/null 2>&1; then
+if [ -f /etc/config/network ] && command -v uci >/dev/null 2>&1; then
+  # OpenWrt：走 UCI（ip-full / wg-quick 都不一定有）
+  echo "    检测到 OpenWrt：用 UCI 配置 $IFACE"
+  PRIV="$(sed -n 's/^PrivateKey = //p' "$CONF" | head -1)"
+  PUB="$(sed -n 's/^PublicKey = //p' "$CONF" | head -1)"
+  EP="$(sed -n 's/^Endpoint = //p' "$CONF" | head -1)"
+  EPHOST="\${EP%:*}"; EPPORT="\${EP##*:}"
+  MTUC="$(sed -n 's/^MTU = //p' "$CONF" | head -1)"
+  ALLOWEDC="$(sed -n 's/^AllowedIPs = //p' "$CONF" | head -1)"
+
+  uci -q delete network.awa0 >/dev/null 2>&1 || true
+  uci -q delete network.wgawa0 >/dev/null 2>&1 || true
+  uci set network.awa0=interface
+  uci set network.awa0.proto='wireguard'
+  uci set network.awa0.private_key="$PRIV"
+  uci add_list network.awa0.addresses="$ADDR/$PREFIX"
+  [ -n "$MTUC" ] && uci set network.awa0.mtu="$MTUC"
+
+  uci set network.wgawa0=wireguard_awa0
+  uci set network.wgawa0.description='awamesh'
+  uci set network.wgawa0.public_key="$PUB"
+  uci set network.wgawa0.endpoint_host="$EPHOST"
+  uci set network.wgawa0.endpoint_port="$EPPORT"
+  uci set network.wgawa0.persistent_keepalive='25'
+  echo "$ALLOWEDC" | tr ',' '\n' | while read -r cidr; do
+    cidr="$(echo "$cidr" | tr -d ' ')"
+    [ -n "$cidr" ] && uci add_list network.wgawa0.allowed_ips="$cidr"
+  done
+  uci commit network
+
+  if [ -f /etc/config/firewall ]; then
+    uci -q delete firewall.awamesh >/dev/null 2>&1 || true
+    uci set firewall.awamesh=zone
+    uci set firewall.awamesh.name='awamesh'
+    uci set firewall.awamesh.input='ACCEPT'
+    uci set firewall.awamesh.output='ACCEPT'
+    uci set firewall.awamesh.forward='ACCEPT'
+    uci set firewall.awamesh.masq='1'
+    uci set firewall.awamesh.mtu_fix='1'
+    uci add_list firewall.awamesh.network='awa0'
+    uci -q delete firewall.awamesh_lan >/dev/null 2>&1 || true
+    uci set firewall.awamesh_lan=forwarding
+    uci set firewall.awamesh_lan.src='awamesh'
+    uci set firewall.awamesh_lan.dest='lan'
+    uci -q delete firewall.lan_awamesh >/dev/null 2>&1 || true
+    uci set firewall.lan_awamesh=forwarding
+    uci set firewall.lan_awamesh.src='lan'
+    uci set firewall.lan_awamesh.dest='awamesh'
+    uci commit firewall
+  fi
+
+  /etc/init.d/network reload >/dev/null 2>&1 || /etc/init.d/network restart >/dev/null 2>&1 || true
+  [ -x /etc/init.d/firewall ] && /etc/init.d/firewall reload >/dev/null 2>&1 || true
+  sleep 3
+elif command -v wg-quick >/dev/null 2>&1; then
   wg-quick down "$IFACE" 2>/dev/null || true
   wg-quick up "$IFACE"
 else
@@ -177,7 +237,7 @@ SERVER="$SERVER"; IFACE="$IFACE"; TOKEN="\$(cat /etc/wireguard/awa.token)"
 PUBIP="\$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
 [ -n "\$PUBIP" ] && curl -fsS -X POST "\$SERVER/api/join/hit" \
   -H "Authorization: Bearer \$TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"endpoint\":\"\$PUBIP:$(wg show \$IFACE listen-port 2>/dev/null || echo 51820)\"}" >/dev/null 2>&1 || true
+  -d "{\\\"endpoint\\\":\\\"\$PUBIP:$(wg show \$IFACE listen-port 2>/dev/null || echo 51820)\\\"}" >/dev/null 2>&1 || true
 CODE="\$(curl -sS -o /tmp/awa.state -w '%{http_code}' --max-time 10 \\
   -H "Authorization: Bearer \$TOKEN" "\$SERVER/api/join/state?format=shell" 2>/dev/null || echo 000)"
 

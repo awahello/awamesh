@@ -80,6 +80,14 @@ try {
   r = await call("/api/wg/profile", { method: "POST", body: JSON.stringify({ mode: "builtin", endpoint: "" }) });
   check("自动模式保存并自动推导 Endpoint", r.status === 200 && r.body.mode === "builtin" && !!r.body.endpoint, r.text.slice(0, 140));
 
+  // join.sh 的请求体必须是合法 JSON（曾经因为模板转义丢失变成 -d "{"token":...}"）
+  r = await call("/api/keys", { method: "POST", body: JSON.stringify({ tag: "js", ttl: 1 }) });
+  const jk = r.body.key;
+  r = await call(`/join.sh?key=${jk}`);
+  check("join.sh 的 JSON 转义正确", r.text.includes('-d "{\\"token\\"'), r.text.split("\n").find(l => l.includes("api/join?format=shell")) || "");
+  check("join.sh 不再依赖 hostname 命令", r.text.includes("/proc/sys/kernel/hostname"), "缺少 hostname 兜底");
+  check("join.sh 内置 OpenWrt UCI 分支", r.text.includes("network.wgawa0") && r.text.includes("firewall.awamesh"), "缺少 UCI 支");
+
   r = await call("/api/update/check");
   check("升级检查接口可用", r.status === 200 && !!r.body.current && r.body.command.includes("upgrade.sh"), r.text.slice(0, 120));
 

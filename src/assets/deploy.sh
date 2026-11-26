@@ -6,7 +6,7 @@ set -u
 SERVER="@@SERVER@@"
 TOKEN="@@TOKEN@@"
 IFACE="awa0"
-HOST="$(hostname 2>/dev/null || echo node)"
+HOST="$(hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || echo node)"
 
 while [ $# -gt 0 ]; do
   case "$1" in
