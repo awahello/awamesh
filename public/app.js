@@ -539,6 +539,7 @@ async function viewSettings(main) {
   const wg = S.backend === "wg" ? await api("/api/wg/profile") : null;
   const cf = await api("/api/cf/profile").catch(() => ({ enabled: false, tokenSet: false, account: "" }));
   const ts = await api("/api/ts/profile").catch(() => ({ enabled: false, hint: "", loginServer: "" }));
+  const upd = await api("/api/update/check").catch(() => null);
   main.innerHTML = `
     <div class="head"><div><h1>设置</h1><div class="sub">只读信息 + 少量可改项</div></div></div>
     <div class="grid c2e">
@@ -570,6 +571,22 @@ async function viewSettings(main) {
           <button class="btn" id="testPublicUrl">测一下</button>
         </div>
         <div id="publicUrlOut"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><b>版本与升级</b><span>${upd && upd.outdated ? `有新版本 ${esc(upd.latest)}` : `当前 ${esc(S.version)}`}</span></div>
+        <div class="rows" style="margin-bottom:10px">
+          <div class="row" style="grid-template-columns:1fr 1.4fr"><div class="dim">当前版本</div><div class="mono">${esc(S.version)}</div></div>
+          <div class="row" style="grid-template-columns:1fr 1.4fr"><div class="dim">最新版本</div><div class="mono">${upd && upd.latest ? esc(upd.latest) : "查询不到（可能没外网）"}</div></div>
+        </div>
+        <p class="dim" style="font-size:11px;margin:0 0 8px">
+          升级用这一条命令（以后都一样，不用记版本号）：在服务器上执行
+        </p>
+        <div class="code">${esc((upd && upd.command) || "curl -fsSL https://raw.githubusercontent.com/awahello/awamesh/main/upgrade.sh | sh")}</div>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <button class="btn primary" id="copyUpgrade">复制升级命令</button>
+          <a class="btn" href="${esc((upd && upd.docs) || "https://github.com/awahello/awamesh")}" target="_blank" rel="noopener noreferrer">版本历史</a>
+        </div>
       </div>
       <div class="card">
         <div class="card-h"><b>安全</b><span>面板访问控制</span></div>
@@ -789,6 +806,11 @@ async function viewSettings(main) {
       toast("已修改，请用新口令重新登录");
       setTimeout(() => location.reload(), 900);
     } catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#copyUpgrade").onclick = async () => {
+    const cmd = "curl -fsSL https://raw.githubusercontent.com/awahello/awamesh/main/upgrade.sh | sh";
+    try { await navigator.clipboard.writeText(cmd); toast("已复制，在服务器上执行即可"); }
+    catch { toast("复制失败，请手动选择", true); }
   };
   main.querySelector("#savePublicUrl").onclick = async () => {
     try {

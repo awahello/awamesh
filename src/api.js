@@ -318,6 +318,42 @@ export function publicBase(req) {
   return `http://${host}:${cfg.port}`;
 }
 
+
+let _updCache = { at: 0, latest: "" };
+
+/** 检查上游版本（10 分钟缓存，失败不报错） */
+export async function updateCheck() {
+  const nowMs = Date.now();
+  if (!_updCache.latest || nowMs - _updCache.at > 600_000) {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 6000);
+      const r = await fetch("https://raw.githubusercontent.com/awahello/awamesh/main/package.json", { signal: ctl.signal });
+      clearTimeout(t);
+      if (r.ok) {
+        const j = await r.json();
+        if (j && j.version) _updCache = { at: nowMs, latest: String(j.version) };
+      }
+    } catch { /* 离线就不提示 */ }
+  }
+  const latest = _updCache.latest;
+  const cmp = (a, b) => {
+    const pa = String(a).split(".").map(Number);
+    const pb = String(b).split(".").map(Number);
+    for (let i = 0; i < 3; i++) {
+      if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+    }
+    return 0;
+  };
+  return {
+    current: cfg.version,
+    latest: latest || "",
+    outdated: !!latest && cmp(latest, cfg.version) > 0,
+    command: "curl -fsSL https://raw.githubusercontent.com/awahello/awamesh/main/upgrade.sh | sh",
+    docs: "https://github.com/awahello/awamesh#更新升级到新版本",
+  };
+}
+
 /** 有效 Endpoint：设置里的 > AWA_PUBLIC_HOST > 请求 Host 推导 */
 export function effectiveEndpoint(host) {
   const bk = backend();
@@ -609,6 +645,10 @@ export async function api(req, res, url, body) {
     rotateSessions();
     addEvent("auth", "后台口令已修改，所有会话失效");
     return { ok: true };
+  }
+
+  if (url.pathname === "/api/update/check" && method === "GET") {
+    return updateCheck();
   }
 
   if (url.pathname === "/api/settings/public-url" && method === "POST") {

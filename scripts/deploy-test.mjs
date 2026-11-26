@@ -80,6 +80,9 @@ try {
   r = await call("/api/wg/profile", { method: "POST", body: JSON.stringify({ mode: "builtin", endpoint: "" }) });
   check("自动模式保存并自动推导 Endpoint", r.status === 200 && r.body.mode === "builtin" && !!r.body.endpoint, r.text.slice(0, 140));
 
+  r = await call("/api/update/check");
+  check("升级检查接口可用", r.status === 200 && !!r.body.current && r.body.command.includes("upgrade.sh"), r.text.slice(0, 120));
+
   // ---- 中继：接入命令带自检凭据，删除/停用后机器自动卸载 ----
   r = await call("/api/relays", { method: "POST", body: JSON.stringify({ name: "hk-relay", region: "香港", addr: "hk.example.com", port: 18444 }) });
   check("新增中继", r.status === 200 && !!r.body.id, r.text.slice(0, 80));
