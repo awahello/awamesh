@@ -522,6 +522,8 @@ docker compose logs --tail 30 awamesh | grep "\[wg\]"
 
 | 版本 | 主要变化 |
 |---|---|
+| **0.3.9** | 修入口脚本条件写错导致容器永远以非 root 运行（即使 `privileged` 也建不了 `awa0`）；启动日志打印运行身份 uid |
+| 0.3.8 | `upgrade.sh` 先校验 compose，自动修复重复的 `privileged` 键（原文件留 `.broken` 备份） |
 | **0.3.7** | 一键升级脚本 `upgrade.sh`；面板「版本与升级」显示最新版本与升级命令 |
 | 0.3.6 | 设备「配置」弹层显示实时握手/收发字节（不用登机器判断通没通） |
 | 0.3.5 | 连通性自检显示实际监听端口，端口与 Endpoint 不一致时给出 compose 改法 |
@@ -627,7 +629,8 @@ docker compose logs --tail 50 awamesh
 | `EACCES` 或「数据目录不可写」 | 宿主机 `./data` 属主 root，容器以 `node`(1000) 运行 | `sudo chown -R 1000:1000 ./data` |
 | 「AWA_DATA_DIR 含换行或制表符」 | 终端粘贴 heredoc 丢换行，两行环境变量粘成一行 | 重写 compose，或用 1Panel 编辑器 |
 | `EADDRINUSE` | 18443 被占用 | 同时改 `ports` 与 `AWA_PORT` |
-| `[wg] 接管失败：Operation not permitted` | 容器缺 `NET_ADMIN`，或宿主机没加载 wireguard 模块 | compose 补 `cap_add: [NET_ADMIN, SYS_MODULE]`；宿主机 `modprobe wireguard` |
+| `[wg] 接管失败：Operation not permitted` | ① 容器缺 `NET_ADMIN`；② **进程不是 root**（加了 privileged 也没用，非 root 的有效能力会被内核清空）；③ 内核没有 wireguard 模块 | 先看日志里 `[wg] 运行身份：uid=?` —— 是 `uid=1000` 就升级到 **0.3.9+**（0.3.9 之前入口脚本有 bug，永远降权）；是 `uid=0` 就补 `cap_add` / `modprobe wireguard` |
+| 加了 `privileged: true` 还是 `Operation not permitted` | 0.3.8 及更早版本的入口脚本里，判断 `AWA_WG_ENABLE` 的那个变量引用多写了一个反斜杠，条件恒为假 → 永远 `su-exec node`（降权） | 升级到 0.3.9；临时绕过：compose 里加 `entrypoint: ["node","--no-warnings","src/server.js"]` |
 | 更新后版本号没变 | tag 是 `latest`，`up -d` 不会自动换镜像 | 见「更新」章节的三条命令 |
 
 **看到的还是演示数据**：检查 compose 里是否还写着 `AWA_BACKEND=mock`，改成 `wg` 后 `up -d --force-recreate`。

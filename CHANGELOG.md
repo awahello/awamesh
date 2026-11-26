@@ -2,6 +2,17 @@
 
 本项目遵循语义化版本；`0.x` 阶段内部结构可能调整，升级前请备份 `data/`。
 
+## 0.3.9
+- **修复**：`docker/entrypoint.sh` 里 `if [ "\${AWA_WG_ENABLE:-1}" = "1" ]` 多了反斜杠，条件恒为假，
+  容器一直以 `node`(uid 1000) 运行 → 有效能力被内核清空 → `ip link add ... type wireguard` 报
+  `RTNETLINK answers: Operation not permitted`，与 `cap_add` / `privileged` 无关
+- 启动日志新增 `[wg] 运行身份：uid=0（root）` / `uid=1000（非 root，能力会被清空）`
+- 连通性自检返回 `uid`，界面显示运行身份；非 root 时直接给出原因
+
+## 0.3.8
+- `upgrade.sh` 先跑 `docker compose config` 校验；遇到「key already defined」自动去重
+  （只保留第一份 `privileged:`，原文件备份为 `docker-compose.yml.broken-*`）
+
 ## 0.3.7
 - 新增 `upgrade.sh`：一条命令升级（自动找目录、备份、pull、重建、健康检查、版本对比）
 - 新增 `GET /api/update/check` 与面板「版本与升级」卡片，显示当前/最新版本与升级命令
