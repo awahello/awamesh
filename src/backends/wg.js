@@ -74,6 +74,7 @@ export const wgBackend = {
       online: !!d.last_seen && now() - d.last_seen < 180 && !d.revoked_at,
       // 直连条件：节点自报的地址 与 控制台从内核看到的源地址 对得上。
       // 对不上通常说明这台机器走了代理/多层 NAT —— 自报的是代理出口，别的节点连不到。
+      hasKey: !!db.prepare("SELECT private_key FROM wg_peers WHERE device_id = ?").get(d.id)?.private_key,
       endpointMismatch: !!d.reported_endpoint && !!d.endpoint && hostOf(d.reported_endpoint) !== hostOf(d.endpoint),
       path: d.last_seen && now() - d.last_seen < 180
         ? (p2pOk(d) ? "direct" : "relay")

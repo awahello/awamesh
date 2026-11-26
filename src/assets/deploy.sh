@@ -49,7 +49,17 @@ mkdir -p /etc/wireguard 2>/dev/null || true
 [ -d /etc/wireguard ] || { mkdir -p /etc/wireguard; }
 umask 077
 CONF="/etc/wireguard/$IFACE.conf"
-curl -fsS --max-time 15 "$SERVER/api/deploy/config?token=$TOKEN" -o "$CONF" || die "拉取配置失败：凭据可能已失效（回面板点「一键部署」重新生成），或控制台地址不可达"
+HTTP="$(curl -sS --max-time 15 -o "$CONF" -w '%{http_code}' "$SERVER/api/deploy/config?token=$TOKEN" 2>/dev/null || echo 000)"
+case "$HTTP" in
+  200) : ;;
+  000) die "连不上控制台：$SERVER（检查地址、反代与防火墙）" ;;
+  *)
+    REASON="$(sed -n 's/.*"error":"\([^"]*\)".*/\1/p' "$CONF" 2>/dev/null | head -1)"
+    [ -n "$REASON" ] || REASON="$(head -c 200 "$CONF" 2>/dev/null)"
+    rm -f "$CONF"
+    die "拉取配置失败（HTTP $HTTP）：${REASON:-未知原因}"
+    ;;
+esac
 
 if ! grep -q "^Endpoint = [^<]" "$CONF" 2>/dev/null; then
   rm -f "$CONF"

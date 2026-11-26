@@ -1236,6 +1236,10 @@ async function openDeploy(dev) {
     <div class="modal">
       <h3>一键部署 · ${esc(dev.name)}</h3>
       <div class="sub">在目标机器上以 root 执行下面这一条，会自动装 wireguard-tools、写入配置、拉起接口、并开启对端自动同步</div>
+      ${dev.hasKey === false ? `<div class="card" style="margin:0 0 10px;border-color:var(--warn)">
+        <b>这台是「自助加入」的</b>
+        <div class="dim" style="font-size:11.5px;margin-top:4px">私钥只在它本机，<b>下面这条 /dp/ 命令用不了</b>（服务端会返回 400）。接口已经通了的话，点「修复凭据」拿一条命令补同步即可；要重装就先用面板的「加入链接」。</div>
+      </div>` : ""}
       <div id="dpBody"><div class="empty">生成中…</div></div>
       <div class="modal-actions">
         <button class="btn" data-act="close">关闭</button>
