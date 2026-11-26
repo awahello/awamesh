@@ -186,13 +186,28 @@ export async function updateNodeEndpoint(nodeToken, endpoint, port, tsIp) {
 
   const ep = String(endpoint || "").trim().slice(0, 120);
   if (!ep) return { ok: true, changed: false };
-  db.prepare("UPDATE devices SET endpoint = ?, reported_endpoint = ?, wg_port = ? WHERE id = ?")
-    .run(ep, ep, Number(port) || null, self.id);
-  if (isManaged()) {
-    const peer = db.prepare("SELECT public_key FROM wg_peers WHERE device_id = ?").get(self.id);
-    if (peer?.public_key) await wg.setEndpoint(peer.public_key, ep.includes(":") ? ep : `${ep}:${Number(port) || 51820}`);
+  const epFull = ep.includes(":") ? ep : `${ep}:${Number(port) || 51820}`;
+
+  // 关键：节点自报的地址可能是**代理出口**。如果它和控制台从内核看到的源地址不一致，
+  // 绝不能拿它去覆盖 wg 的 endpoint —— 否则控制台会把包发到代理那边，
+  // 出现「节点能 ping 通控制台、控制台 ping 不通节点」的单向故障。
+  let learned = "";
+  const peer = db.prepare("SELECT public_key FROM wg_peers WHERE device_id = ?").get(self.id);
+  if (isManaged() && peer?.public_key) {
+    try { learned = await wg.endpointOf(peer.public_key); } catch { learned = ""; }
   }
-  return { ok: true, changed: self.endpoint !== ep };
+
+  const h = (v) => String(v || "").replace(/^\[/, "").replace(/\]:\d+$/, "").replace(/:\d+$/, "");
+  const mismatch = !!learned && h(learned) !== h(epFull);
+  const effective = mismatch ? learned : epFull;
+
+  db.prepare("UPDATE devices SET endpoint = ?, reported_endpoint = ?, wg_port = ? WHERE id = ?")
+    .run(effective, epFull, Number(port) || null, self.id);
+
+  if (isManaged() && peer?.public_key && !mismatch) {
+    await wg.setEndpoint(peer.public_key, epFull);
+  }
+  return { ok: true, changed: self.endpoint !== effective, endpoint: effective, reported: epFull, mismatch };
 }
 
 

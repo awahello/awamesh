@@ -104,6 +104,16 @@ export const wg = {
     await this.sh("wg", ["set", this.iface, "peer", publicKey, "allowed-ips", allowed]);
   },
 
+  /** 内核里这个对端当前的实际 endpoint（NAT 后的真实地址） */
+  async endpointOf(publicKey) {
+    try {
+      const peers = await this.dump();
+      return (peers.find(p => p.publicKey === publicKey) || {}).endpoint || "";
+    } catch {
+      return "";
+    }
+  },
+
   async setEndpoint(publicKey, endpoint) {
     if (!endpoint) return;
     try {
