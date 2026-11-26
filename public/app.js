@@ -742,7 +742,7 @@ async function viewSettings(main) {
             <div style="font-size:12px;display:grid;gap:4px">
               <div>部署端公网地址：<span class="mono">${esc(r.publicIp || "探测不到（可能没有外网）")}</span></div>
               <div>当前 Endpoint：<span class="mono">${esc(r.endpoint || "未填")}</span> ${r.endpointIsSelf ? '<span class="tag info">指向本机</span>' : ""}</div>
-              <div>接口托管：${r.managed ? `<span class="dot ok"></span> 已接管 ${esc(r.iface)}` : `<span class="dot warn"></span> 未托管`}</div>
+              <div>接口托管：${r.managed ? `<span class="dot ok"></span> 已接管 ${esc(r.iface)}${r.listenPort ? " · 实际监听 udp " + r.listenPort : ""}` : `<span class="dot warn"></span> 未托管（没有服务端在监听，节点握手会 0 B 收到）`}</div>
             </div>
             ${r.issues.length ? `<div style="margin-top:8px">${r.issues.map(x => `<div style="font-size:11.5px;color:var(--bad)">· ${esc(x)}</div>`).join("")}</div>` : ""}
             ${r.hints.length ? `<div style="margin-top:8px">${r.hints.map(x => `<div style="font-size:11.5px;color:var(--muted)">· ${esc(x)}</div>`).join("")}</div>` : ""}

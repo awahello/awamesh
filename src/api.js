@@ -261,6 +261,16 @@ export async function wgCheck() {
     hints.push("那台机器上必须存在对应的 WireGuard 服务端，并把每台节点的 [Peer] 加进去");
   }
 
+  // 容器里真实监听的 UDP 端口；和 Endpoint 里的端口对不上就说明 compose 的 ports 没跟着改
+  let listenPort = 0;
+  if (isManaged()) {
+    try { listenPort = await wg.listenPort(); } catch { listenPort = 0; }
+    if (listenPort && epPort && Number(epPort) !== listenPort) {
+      issues.push(`Endpoint 端口 ${epPort} 与容器实际监听 ${listenPort} 不一致`);
+      hints.push(`compose 的 ports 要改成 "${listenPort}:${listenPort}/udp"，或把 Endpoint 端口改成 ${listenPort}`);
+    }
+  }
+
   if (!isManaged()) {
     issues.push("部署端没有托管 awa0 接口（缺 NET_ADMIN 或内核无 wireguard 模块），当前只能生成配置，不能自动中转");
     hints.push("compose 里补 cap_add: [NET_ADMIN, SYS_MODULE] 后 docker compose up -d --force-recreate");
@@ -269,6 +279,7 @@ export async function wgCheck() {
   return {
     mode,
     managed: isManaged(),
+    listenPort,
     iface: wg.iface,
     publicIp,
     endpoint,

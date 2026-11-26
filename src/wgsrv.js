@@ -89,6 +89,16 @@ export const wg = {
     return true;
   },
 
+  /** 当前接口真实的 UDP 监听端口（建接口后可能与配置里的不同） */
+  async listenPort() {
+    try {
+      const { stdout } = await this.sh("wg", ["show", this.iface, "listen-port"]);
+      return Number(String(stdout).trim()) || 0;
+    } catch {
+      return 0;
+    }
+  },
+
   async addPeer(publicKey, address, extraCidrs = []) {
     const allowed = [`${address}/32`, ...(extraCidrs || []).filter(Boolean)].join(",");
     await this.sh("wg", ["set", this.iface, "peer", publicKey, "allowed-ips", allowed]);
