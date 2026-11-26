@@ -316,7 +316,7 @@ const server = http.createServer(async (req, res) => {
     if (dp && req.method === "GET") {
       const tpl = fs.readFileSync(new URL("./assets/deploy.sh", import.meta.url), "utf8");
       const base = (cfg.controlUrl || `http://${req.headers.host || "127.0.0.1:" + cfg.port}`).replace(/\/$/, "");
-      const body = tpl.split("@@SERVER@@").join(base).split("@@TOKEN@@").join(dp[1]);
+      const body = tpl.replace(/\r\n/g, "\n").split("@@SERVER@@").join(base).split("@@TOKEN@@").join(dp[1]);
       res.writeHead(200, { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "no-store" });
       return res.end(body);
     }
