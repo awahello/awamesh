@@ -96,14 +96,14 @@ try {
 
   await call(`/api/relays/${relayId}/toggle`, { method: "POST", body: JSON.stringify({ enabled: false }) });
   r = await call("/api/relay/state", { headers: { Authorization: `Bearer ${relayTok}`, "Content-Type": "text/plain" } });
-  check("停用后中继自检返回 401（触发卸载）", r.status === 401, r.status);
+  check("停用后返回 enabled:false（机器只停容器，不卸载）", r.status === 200 && r.body.enabled === false, r.text.slice(0, 80));
 
   await call(`/api/relays/${relayId}/toggle`, { method: "POST", body: JSON.stringify({ enabled: true }) });
   r = await call(`/api/relays/${relayId}/delete`, { method: "POST", body: "{}" });
   check("可删除中继", r.status === 200, r.text.slice(0, 60));
 
   r = await call("/api/relay/state", { headers: { Authorization: `Bearer ${relayTok}`, "Content-Type": "text/plain" } });
-  check("删除后中继凭据失效", r.status === 401, r.status);
+  check("删除后才 401（机器自行卸载）", r.status === 401, r.status);
 
   // 反代 / Cloudflare 后面的场景：命令里必须是 https + 外部域名，且不能带容器端口
   r = await call(`/api/devices/${id}/deploy`, {

@@ -385,8 +385,8 @@ export function relayAlive(token) {
   const hash = crypto.createHash("SHA256").update(String(token || "")).digest("hex");
   const row = db.prepare("SELECT * FROM relays WHERE token_hash = ?").get(hash);
   if (!row) throw Object.assign(new Error("中继凭据无效（已删除）"), { status: 401 });
-  if (!row.enabled) throw Object.assign(new Error("中继已在控制台停用"), { status: 401 });
-  return { ok: true, id: row.id, name: row.name, port: row.port };
+  // 记录被删 → 401，机器自行卸载；只是停用 → 200 + enabled:false，机器停容器、保留配置
+  return { ok: true, enabled: !!row.enabled, id: row.id, name: row.name, port: row.port };
 }
 
 /** 生成中继机的部署脚本：优先 Docker，其次 Go 安装；交互式 shell 里失败不会退出会话 */
@@ -473,11 +473,24 @@ TOKEN="$(cat /etc/awa-relay.token 2>/dev/null)" || exit 0
 SERVER="$(cat /etc/awa-relay.server 2>/dev/null)" || exit 0
 [ -n "$TOKEN" ] && [ -n "$SERVER" ] || exit 0
 
-CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 \
+CODE="$(curl -sS -o /tmp/awa-relay.state -w '%{http_code}' --max-time 8 \
   -H "Authorization: Bearer $TOKEN" "$SERVER/api/relay/state" 2>/dev/null || echo 000)"
 
 case "$CODE" in
-  200) exit 0 ;;
+  200)
+    BODY="$(cat /tmp/awa-relay.state 2>/dev/null || true)"
+    case "$BODY" in
+      *'"enabled":false'*)
+        command -v docker >/dev/null 2>&1 && docker stop awamesh-derp >/dev/null 2>&1
+        command -v systemctl >/dev/null 2>&1 && systemctl stop derper >/dev/null 2>&1
+        ;;
+      *'"enabled":true'*)
+        command -v docker >/dev/null 2>&1 && docker start awamesh-derp >/dev/null 2>&1
+        command -v systemctl >/dev/null 2>&1 && systemctl start derper >/dev/null 2>&1
+        ;;
+    esac
+    exit 0
+    ;;
   401|403|404)
     echo "awamesh: 这台中继已在控制台删除/停用，开始卸载" >&2
     if command -v docker >/dev/null 2>&1; then

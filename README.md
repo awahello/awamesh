@@ -153,7 +153,8 @@ curl -fsSL --connect-timeout 10 'https://awamesh.example.com/dp/dp_xxx' | sh -s 
 |---|---|---|
 | 吊销 | 移除对端、作废凭据、标记 revoked | 拉状态收到 401 → 关接口、删 `/etc/wireguard/awa0.conf`、删 token、停并删 timer/cron、删 `/usr/local/bin/awa-peers` |
 | 删除 | 连记录、密钥、事件一起清掉 | 同上（凭据立即失效） |
-| 中继「删除 / 从地图摘除」 | 中继记录删掉或停用 | 那台机器的 `awa-relay.timer` 收到 401 → `docker rm -f awamesh-derp`（或停删 `derper.service`）、删镜像、删凭据与定时器 |
+| 中继「从地图摘除」（停用） | `enabled=0`，不进 DERP 地图 | `awa-relay.timer` 收到 `enabled:false` → `docker stop awamesh-derp`，配置保留，重新启用会自动 `start` |
+| 中继「删除」 | 记录与凭据一起删 | 收到 401 → `docker rm -f awamesh-derp`、删镜像、删 systemd 单元、删凭据与定时器 |
 
 **节点离线怎么办**：点「删除」弹层里有「手动卸载命令」，Linux / OpenWrt 与 Windows 各一份，粘上去就清干净，不依赖控制台可达。
 
