@@ -414,6 +414,41 @@ docker run -d --name cf-nas --restart unless-stopped \
 
 一条隧道可以为整张网发布任意多个服务 —— 加服务只改 ingress，不用再给目标机器装 cloudflared。
 
+## 安装时会自动装 cloudflared 吗
+
+**不会。** `install.sh` 只装 awamesh 本体。Cloudflare 隧道连接器是一个**独立容器**，要你自己起 —— 原因是它需要和你选中的隧道绑定，而隧道 token 是面板「发布」时才生成/展示的。
+
+### 为什么必须共用控制台的网络命名空间
+
+`10.88.0.0/24` 只存在于 **awamesh 容器**里。所以：
+
+| 写法 | 能不能访问 10.88.0.x | 结论 |
+|---|---|---|
+| `--network host` | ❌ 宿主机没有这个网段 | 会 502 |
+| `--network bridge`（默认） | ❌ | 会 502 |
+| **`--network container:awamesh`** | ✅ 同一个 netns | 正确 |
+
+一条命令版：
+
+```bash
+docker run -d --name cf-awamesh --restart unless-stopped \
+  --network container:awamesh \
+  cloudflare/cloudflared:latest tunnel --no-autoupdate run --token <TOKEN>
+```
+
+写进 compose（推荐，跟着 `docker compose up -d` 一起起）：
+
+```yaml
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cf-awamesh
+    network_mode: "service:awamesh"
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token <TOKEN>
+```
+
+面板「添加隧道 → 发布到 Cloudflare」成功后，会直接把上面两种写法的**完整内容**给你，复制即可。
+
 ## 兜底：UDP 被封时用 Tailscale
 
 WireGuard 走 UDP。公司网络、酒店、校园网经常只放行 443/TCP，这时隧道建不起来。三层兜底：

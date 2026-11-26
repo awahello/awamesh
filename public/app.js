@@ -1474,7 +1474,7 @@ function openAddTunnel() {
           <div>ingress：已写入 <span class="mono">${esc(r.hostname)} → ${esc(r.backend)}</span></div>
           <div>DNS：${r.dns === "ok" ? '<span style="color:var(--ok)">已指向 ' + esc(r.hostname) + '</span>' : '<span style="color:var(--bad)">未修改：' + esc(r.dnsError || "跳过") + "</span>"}</div>
         </div>
-        ${r.command ? `<div class="dim" style="font-size:11px">在 mesh 内任意一台机器上起连接器（需要 --network host）：</div><div class="code">${esc(r.command)}</div>` : '<div class="dim" style="font-size:11px">拿不到连接器 token：Token 需要 Account → Cloudflare Tunnel → Write</div>'}`;
+        ${r.command ? `<div class="dim" style="font-size:11px">在控制台那台起连接器（必须共用控制台的网络命名空间，否则看不到 10.88.0.0/24）：</div><div class="code">${esc(r.command)}</div>` : '<div class="dim" style="font-size:11px">拿不到连接器 token：Token 需要 Account → Cloudflare Tunnel → Write</div>'}`;
       toast("已发布到 Cloudflare");
     } catch (e) {
       out.innerHTML = `<div style="font-size:11.5px;margin:8px 0;color:var(--bad)">失败：${esc(e.message)}</div>`;

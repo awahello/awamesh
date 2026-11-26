@@ -1225,10 +1225,14 @@ ingress:
       .run("cf_" + tun.id + "_" + hostname, tun.name, hostname, backend.replace(/^https?:\/\//, ""), "unknown", null, now(), 0);
 
     addEvent("tunnel", `发布 ${hostname} → ${backend}（隧道 ${tun.name}）`);
+    // 关键：连接器必须和控制台共享同一个网络命名空间，才看得到 10.88.0.0/24
     const command = token
-      ? `docker run -d --name cf-${tun.name} --restart unless-stopped --network host cloudflare/cloudflared:latest tunnel --no-autoupdate run --token ${token}`
+      ? `docker run -d --name cf-${tun.name} --restart unless-stopped --network container:awamesh cloudflare/cloudflared:latest tunnel --no-autoupdate run --token ${token}`
       : "";
-    return { ok: true, tunnelId: tun.id, tunnelName: tun.name, hostname, backend, ingress: rules, dns, dnsError, command, tokenAvailable: !!token };
+    const compose = token
+      ? `  cloudflared://n    image: cloudflare/cloudflared:latest\n    container_name: cf-${tun.name}\n    network_mode: "service:awamesh"\n    restart: unless-stopped\n    command: tunnel --no-autoupdate run --token ${token}`
+      : "";
+    return { ok: true, tunnelId: tun.id, tunnelName: tun.name, hostname, backend, ingress: rules, dns, dnsError, command, compose, tokenAvailable: !!token };
   }
 
   if (url.pathname === "/api/tunnels/sync" && method === "POST") {
