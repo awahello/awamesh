@@ -273,7 +273,8 @@ export async function wgCheck() {
 
   if (!isManaged()) {
     issues.push("部署端没有托管 awa0 接口（缺 NET_ADMIN 或内核无 wireguard 模块），当前只能生成配置，不能自动中转");
-    hints.push("compose 里补 cap_add: [NET_ADMIN, SYS_MODULE] 后 docker compose up -d --force-recreate");
+    hints.push("compose 补 cap_add: [NET_ADMIN, SYS_MODULE] → docker compose up -d --force-recreate（restart 不生效）");
+    hints.push("还不行就临时加 privileged: true 验证：sed -i 's/^    cap_add:/    privileged: true\\n    cap_add:/' docker-compose.yml");
   }
 
   return {
@@ -789,6 +790,46 @@ ingress:
 
 
   // 手动卸载命令：节点离线 / 控制台地址变了导致自动清理跑不到时用
+
+  // 单台设备的实时握手（控制台自己读 wg dump，不用登那台机器）
+  if (seg[0] === "devices" && seg[2] === "status" && method === "GET") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+    const peer = db.prepare("SELECT * FROM wg_peers WHERE device_id = ?").get(seg[1]);
+    if (!peer) throw new Error("该设备没有对端记录（自助加入的需要节点先连上）");
+
+    let row = null;
+    let managed = false;
+    try {
+      if (isManaged()) {
+        managed = true;
+        const dump = await wg.dump();
+        row = dump.find(p => p.publicKey === peer.public_key) || null;
+      }
+    } catch { /* 读取失败当作未知 */ }
+
+    const t = now();
+    const hs = row?.handshake || 0;
+    return {
+      managed,
+      iface: wg.iface,
+      found: !!row,
+      endpoint: row?.endpoint || dev.endpoint || "",
+      handshake: hs || null,
+      handshakeAgo: hs ? t - hs : null,
+      rx: row?.rx ?? null,
+      tx: row?.tx ?? null,
+      alive: !!hs && t - hs < 180,
+      hints: !managed
+        ? ["控制台未托管 awa0，读不到握手状态：先解决 NET_ADMIN（见设置页检测结果）"]
+        : !row
+          ? ["控制台接口里没有这个对端：点一次「一键部署」重新下发，或重启容器让它从库里恢复"]
+          : !hs
+            ? ["从未握手：UDP 51820 到控制台不通（云安全组 / 实例 iptables / 端口映射）"]
+            : [],
+    };
+  }
+
   if (seg[0] === "devices" && seg[2] === "uninstall" && method === "GET") {
     const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
     if (!dev) throw new Error("设备不存在");

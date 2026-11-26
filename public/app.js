@@ -250,8 +250,21 @@ async function viewDevices(main) {
       if (b.dataset.op === "conf") {
         try {
           const c = await api(`/api/devices/${encodeURIComponent(id)}/config`);
+          const st = await api(`/api/devices/${encodeURIComponent(id)}/status`).catch(() => null);
           const warn = c.endpointSet ? "" : "⚠ Endpoint 还没填（设置 → WireGuard 服务端），这份配置导入后连不上。\n\n";
-          showCode(`${dev.name} · WireGuard 配置`, warn + (c.clientConfig || "该设备没有可用私钥（自助加入的节点私钥在其本机）"));
+          let head = "";
+          if (st) {
+            const ago = st.handshakeAgo == null ? "从未握手" : st.handshakeAgo + " 秒前";
+            head = [
+              `# 实时状态`,
+              `# 接口：${st.managed ? "已接管 " + st.iface : "未托管（无 NET_ADMIN）"}`,
+              `# 对端：${st.found ? "在接口里" : "不在接口里"} · endpoint：${st.endpoint || "—"}`,
+              `# 握手：${ago} · 收 ${st.rx ?? "?"} B / 发 ${st.tx ?? "?"} B · ${st.alive ? "在线" : "离线"}`,
+              ...(st.hints || []).map(h => "# ! " + h),
+              "",
+            ].join("\n");
+          }
+          showCode(`${dev.name} · 状态与配置`, head + "\n" + warn + (c.clientConfig || "该设备没有可用私钥（自助加入的节点私钥在其本机）"));
         } catch (e) { toast(e.message, true); }
         return;
       }
