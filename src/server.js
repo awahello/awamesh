@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cfg, log } from "./config.js";
-import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig, splitRoutes, deployTailscale, publicBase, relayAlive } from "./api.js";
+import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig, splitRoutes, deployTailscale, publicBase, relayAlive, exportBundle } from "./api.js";
 import { seedIfEmpty, pruneEvents, addEvent, demoHeartbeat, clearDemo } from "./db.js";
 import {
   ensureAdminCredential, verifyCredential, sessionToken, validSession,
@@ -606,6 +606,26 @@ async function syncWgStatus() {
 globalThis.__awaWgRetry = () => wgBoot();
 globalThis.__awaProbeRelays = () => probeRelays();
 
+
+/** 每日把整份配置写到 data/auto-backup/，方便 rsync 到备机（保留 7 份） */
+function autoBackupOnce() {
+  if (process.env.AWA_AUTO_BACKUP === "0") return;
+  try {
+    const dir = path.join(cfg.dataDir, "auto-backup");
+    fs.mkdirSync(dir, { recursive: true });
+    const day = new Date().toISOString().slice(0, 10);
+    const file = path.join(dir, `awamesh-${day}.json`);
+    fs.writeFileSync(file, JSON.stringify(exportBundle(), null, 2), { mode: 0o600 });
+    const files = fs.readdirSync(dir).filter(f => f.endsWith(".json")).sort();
+    while (files.length > 7) {
+      try { fs.unlinkSync(path.join(dir, files.shift())); } catch { break; }
+    }
+    log(`[backup] 已写入 ${file}`);
+  } catch (e) {
+    log("[backup] 自动备份失败：" + e.message);
+  }
+}
+
 /** 内置中转：控制台本身就是星型转发点，不需要额外部署 */
 function ensureBuiltinRelay() {
   if (cfg.backend !== "wg") return;
@@ -666,6 +686,8 @@ server.listen(cfg.port, cfg.host, () => {
   if (cfg.mode === "tiny") log("tiny 模式：事件保留 " + cfg.eventKeepDays + " 天，健康检查间隔放宽");
   wgBoot();
   ensureBuiltinRelay();
+  setTimeout(autoBackupOnce, 30_000).unref();
+  setInterval(autoBackupOnce, 24 * 3600_000).unref();
   probeRelays().catch(() => {});
   setInterval(() => probeRelays().catch(() => {}), 60_000).unref();
 });

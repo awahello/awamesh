@@ -513,6 +513,73 @@ ingress:
 
 ---
 
+## 多部署端与高可用（单点怎么兜）
+
+先说清楚现状，避免误解：
+
+| 挂掉的是什么 | 后果 |
+|---|---|
+| **数据面**（节点之间的 WG） | **不会全丢**。每台节点本地都有一份全量对端表（公钥 + 公网 endpoint），已经建立的直连在控制台挂掉后继续工作 |
+| **控制面**（面板 / 编排 / 状态） | 会丢。看不到状态、加不了新设备、改不了角色、导出不了配置 |
+
+所以"控制台单点"影响的是**管理**，不是全部流量。但确实要能快速接管。
+
+### 三种做法，按成本排
+
+| 方案 | 做法 | 接管时间 | 代价 |
+|---|---|---|---|
+| **A. 域名 + 冷备**（推荐） | 备机上装一套同样的容器；控制台每天自动把配置写到 `data/auto-backup/`，你 rsync 到备机；A 挂了在 B 上导入并改 DNS | **1–2 分钟** | 备机平时不跑（或只跑面板），要多花一台小机器 |
+| B. 主备 + 共享 `data/` | 备机挂同一份 `data`（rsync 单向：A → B），备机的容器平时停着 | 30 秒 | SQLite 不能两边同时写，必须严格单向 + 备机停写 |
+| C. 真多活 | 存储层换成 Postgres，两个实例同时读写 | 0（自动） | 要重写存储层，属于 0.5 的活，现在没做 |
+
+### 关键前提：Endpoint 一定要用域名
+
+节点的 `[Peer] Endpoint` 如果是裸 IP，A 挂了你要去**每一台**机器改地址；用域名就只改一次 DNS：
+
+```
+设置 → WireGuard 服务端 → Endpoint 填  mesh.example.com:51820
+DNS: mesh.example.com  A 记录 → A 机公网 IP（TTL 给 60 秒）
+```
+
+WireGuard 在每次重新握手时会重新解析域名，所以切换 DNS 后节点会自己连到新机器。
+
+### 方案 A 的具体步骤
+
+**平时（每台控制台都做）**：自动备份已经在跑了，文件在
+
+```
+data/auto-backup/awamesh-2026-11-27.json     # 每天一份，保留 7 份
+```
+
+把它 rsync 到备机（或者直接用面板「设置 → 备份与迁移 → 导出配置」）：
+
+```bash
+rsync -av /opt/awamesh/data/auto-backup/ backup-host:/opt/awamesh-standby/backup/
+```
+
+**A 挂了的接管流程**：
+
+```bash
+# 1) 备机上装一套（不启动也行，先装好）
+curl -fsSL https://raw.githubusercontent.com/awahello/awamesh/main/install.sh | sh -- --dir /opt/awamesh-standby
+
+# 2) 把最新的备份导入进去（面板 → 设置 → 备份与迁移 → 选择备份文件）
+#    或命令行：
+#    curl -s -b "awa_session=..." -X POST http://127.0.0.1:18443/api/backup/import #      -H "Content-Type: application/json" -d "{\"bundle\": $(cat awamesh-2026-11-27.json), \"mode\": \"replace\"}"
+
+# 3) 改 DNS：mesh.example.com → 备机公网 IP
+# 4) 节点的下一次握手（≤2 分钟）就会连到备机；面板里设备重新变为在线
+```
+
+因为 `data/` 里的服务端私钥是同一份（备份带的），**节点不需要任何改动**。
+
+### 什么情况下节点必须重装
+
+只有两种：
+
+1. 你换了「Mesh 网段」（`10.88.0.0/24` → 别的）
+2. 备份里的 `AWA_SECRET` 和备机的不一致 → 加密字段解不开，但 WG 本身仍然能用（只是 CF Token 之类的要重填）
+
 ## 备份与迁移
 
 控制台里的所有配置（设备、对端、中继、隧道、接入密钥、设置）都能一次性导出，换机器时导入即可：
@@ -602,6 +669,7 @@ docker compose logs --tail 30 awamesh | grep "\[wg\]"
 
 | 版本 | 主要变化 |
 |---|---|
+| **0.4.4** | 每日自动备份到 `data/auto-backup/`（保留 7 份）；新增「多部署端与高可用」章节 |
 | **0.4.3** | 节点/中继自清理改为「连续 3 次 401」才执行，升级或反代抖动不会误删受控端 |
 | **0.4.2** | OpenWrt 上自动建 firewall zone（否则 forward 全被拒）；开始前检测网段冲突并中止；卸载时一并清理 zone |
 | 0.4.1 | `install.sh` 重写为一键安装；OpenWrt 改用 UCI 配置 `awa0`；架构图对齐实现 |
