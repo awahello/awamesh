@@ -80,6 +80,31 @@ try {
   r = await call("/api/wg/profile", { method: "POST", body: JSON.stringify({ mode: "builtin", endpoint: "" }) });
   check("自动模式保存并自动推导 Endpoint", r.status === 200 && r.body.mode === "builtin" && !!r.body.endpoint, r.text.slice(0, 140));
 
+  // ---- 中继：接入命令带自检凭据，删除/停用后机器自动卸载 ----
+  r = await call("/api/relays", { method: "POST", body: JSON.stringify({ name: "hk-relay", region: "香港", addr: "hk.example.com", port: 18444 }) });
+  check("新增中继", r.status === 200 && !!r.body.id, r.text.slice(0, 80));
+  const relayId = r.body.id;
+
+  r = await call(`/api/relays/${relayId}/command`);
+  check("中继接入命令包含自检脚本", r.status === 200 && r.body.script.includes("awa-relay-check") && r.body.script.includes("/api/relay/state"), r.text.slice(0, 120));
+
+  const relayTok = (r.body.script.match(/(rl_[a-f0-9]{16,})/) || [])[1];
+  check("中继命令里带凭据", !!relayTok, String(relayTok));
+
+  r = await call("/api/relay/state", { headers: { Authorization: `Bearer ${relayTok}`, "Content-Type": "text/plain" } });
+  check("中继自检通过", r.status === 200 && r.body.ok === true, r.text.slice(0, 80));
+
+  await call(`/api/relays/${relayId}/toggle`, { method: "POST", body: JSON.stringify({ enabled: false }) });
+  r = await call("/api/relay/state", { headers: { Authorization: `Bearer ${relayTok}`, "Content-Type": "text/plain" } });
+  check("停用后中继自检返回 401（触发卸载）", r.status === 401, r.status);
+
+  await call(`/api/relays/${relayId}/toggle`, { method: "POST", body: JSON.stringify({ enabled: true }) });
+  r = await call(`/api/relays/${relayId}/delete`, { method: "POST", body: "{}" });
+  check("可删除中继", r.status === 200, r.text.slice(0, 60));
+
+  r = await call("/api/relay/state", { headers: { Authorization: `Bearer ${relayTok}`, "Content-Type": "text/plain" } });
+  check("删除后中继凭据失效", r.status === 401, r.status);
+
   // 反代 / Cloudflare 后面的场景：命令里必须是 https + 外部域名，且不能带容器端口
   r = await call(`/api/devices/${id}/deploy`, {
     method: "POST",
@@ -106,6 +131,10 @@ try {
   await call(`/api/devices/${id}/revoke`, { method: "POST", body: "{}" });
   r = await call("/api/join/state?format=shell", { headers: { Authorization: `Bearer ${t3}`, "Content-Type": "text/plain" } });
   check("吊销后节点拉状态得到 401（触发自清理）", r.status === 401, r.status);
+
+  r = await call(`/api/devices/${id}/uninstall`);
+  check("可生成手动卸载命令（Linux）", r.status === 200 && r.body.shell.includes("awa-peers") && r.body.shell.includes("awa0.conf"), r.text.slice(0, 100));
+  check("可生成手动卸载命令（Windows）", r.status === 200 && r.body.ps.includes("uninstalltunnelservice"), r.text.slice(0, 100));
 
   r = await call(`/api/devices/${id}/delete`, { method: "POST", body: "{}" });
   check("可彻底删除设备", r.status === 200, r.text.slice(0, 80));

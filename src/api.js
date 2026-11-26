@@ -379,8 +379,18 @@ export function deployConfig(token, req) {
   };
 }
 
+
+/** 中继机自检：凭据有效且仍启用才返回，否则让那台机器卸载自己 */
+export function relayAlive(token) {
+  const hash = crypto.createHash("SHA256").update(String(token || "")).digest("hex");
+  const row = db.prepare("SELECT * FROM relays WHERE token_hash = ?").get(hash);
+  if (!row) throw Object.assign(new Error("中继凭据无效（已删除）"), { status: 401 });
+  if (!row.enabled) throw Object.assign(new Error("中继已在控制台停用"), { status: 401 });
+  return { ok: true, id: row.id, name: row.name, port: row.port };
+}
+
 /** 生成中继机的部署脚本：优先 Docker，其次 Go 安装；交互式 shell 里失败不会退出会话 */
-function relayScript(relay, cfg) {
+function relayScript(relay, cfg, token, base) {
   const port = relay.port || cfg.relayPort;
   return `#!/bin/sh
 # awamesh 中继节点部署（${relay.region}）
@@ -451,6 +461,70 @@ else
 fi
 echo "    下一步：回面板中继页点「刷新」，状态应为在线；再点「中继地图」导出配置"
 echo "    别忘了云厂商安全组放行 TCP/UDP $PORT"
+
+# ---- 注册到控制台：控制台删除这台中继时，本机自动卸载 ----
+printf '%s' "${token || ""}" > /etc/awa-relay.token
+printf '%s' "${base || ""}" > /etc/awa-relay.server
+chmod 600 /etc/awa-relay.token /etc/awa-relay.server
+
+cat > /usr/local/bin/awa-relay-check <<'CHK'
+#!/bin/sh
+TOKEN="$(cat /etc/awa-relay.token 2>/dev/null)" || exit 0
+SERVER="$(cat /etc/awa-relay.server 2>/dev/null)" || exit 0
+[ -n "$TOKEN" ] && [ -n "$SERVER" ] || exit 0
+
+CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 \
+  -H "Authorization: Bearer $TOKEN" "$SERVER/api/relay/state" 2>/dev/null || echo 000)"
+
+case "$CODE" in
+  200) exit 0 ;;
+  401|403|404)
+    echo "awamesh: 这台中继已在控制台删除/停用，开始卸载" >&2
+    if command -v docker >/dev/null 2>&1; then
+      docker rm -f awamesh-derp >/dev/null 2>&1 || true
+      docker image rm -f ghcr.io/awahello/awamesh-relay:latest >/dev/null 2>&1 || true
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl disable --now awa-relay.timer >/dev/null 2>&1 || true
+      systemctl disable --now derper >/dev/null 2>&1 || true
+      rm -f /etc/systemd/system/awa-relay.timer /etc/systemd/system/awa-relay.service \
+            /etc/systemd/system/derper.service
+      rm -f /usr/local/bin/derper
+      systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    command -v crontab >/dev/null 2>&1 && { crontab -l 2>/dev/null | grep -v awa-relay-check | crontab - 2>/dev/null || true; }
+    rm -f /etc/awa-relay.token /etc/awa-relay.server /usr/local/bin/awa-relay-check
+    echo "awamesh: 中继已卸载（容器 / systemd / 凭据全部清除）" >&2
+    ;;
+esac
+CHK
+chmod +x /usr/local/bin/awa-relay-check
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  cat >/etc/systemd/system/awa-relay.service <<'EOF'
+[Unit]
+Description=awamesh relay keepalive check
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/awa-relay-check
+EOF
+  cat >/etc/systemd/system/awa-relay.timer <<'EOF'
+[Unit]
+Description=awamesh relay keepalive timer
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable --now awa-relay.timer >/dev/null 2>&1 || true
+  echo "    已安装 awa-relay.timer：控制台删除这台中继后，60 秒内自动卸载"
+elif command -v crontab >/dev/null 2>&1; then
+  (crontab -l 2>/dev/null | grep -v awa-relay-check; echo "*/1 * * * * /usr/local/bin/awa-relay-check >/dev/null 2>&1") | crontab - 2>/dev/null || true
+  echo "    已写入 crontab：控制台删除这台中继后，60 秒内自动卸载"
+fi
 `;
 }
 
@@ -689,6 +763,32 @@ ingress:
     return { ok: true };
   }
 
+
+  // 手动卸载命令：节点离线 / 控制台地址变了导致自动清理跑不到时用
+  if (seg[0] === "devices" && seg[2] === "uninstall" && method === "GET") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+    const iface = "awa0";
+    const sh = [
+      `wg-quick down ${iface} 2>/dev/null || ip link del ${iface} 2>/dev/null || true`,
+      `rm -f /etc/wireguard/${iface}.conf /etc/wireguard/awa.token /etc/wireguard/awa.iface`,
+      `systemctl disable --now awa-peers.timer 2>/dev/null || true`,
+      `systemctl disable --now awa-peers.service 2>/dev/null || true`,
+      `rm -f /etc/systemd/system/awa-peers.timer /etc/systemd/system/awa-peers.service`,
+      `systemctl daemon-reload 2>/dev/null || true`,
+      `crontab -l 2>/dev/null | grep -v awa-peers | crontab - 2>/dev/null || true`,
+      `rm -f /usr/local/bin/awa-peers`,
+      `echo "awamesh: 已卸载 ${iface} 与相关定时任务"`,
+    ].join("\n");
+    const ps = [
+      '%WGP% = Join-Path $env:ProgramFiles "WireGuard\\wireguard.exe"',
+      '& %WGP% /uninstalltunnelservice ' + iface,
+      'Remove-Item (Join-Path $env:ProgramFiles "WireGuard\\Data\\Configurations\\' + iface + '.conf") -Force -ErrorAction SilentlyContinue',
+      'Write-Host "awamesh: 已卸载 ' + iface + '"',
+    ].join("\n").replace(/%WGP%/g, "$wg");
+    return { shell: sh, ps, iface, name: dev.name };
+  }
+
   if (seg[0] === "devices" && seg[2] === "rename" && method === "POST") {
     await be.rename(seg[1], body?.name);
     return { ok: true };
@@ -811,7 +911,17 @@ ingress:
   if (seg[0] === "relays" && seg[2] === "command" && method === "GET") {
     const r = db.prepare("SELECT * FROM relays WHERE id = ?").get(seg[1]);
     if (!r) throw new Error("中继不存在");
-    return { script: relayScript(r, cfg), relay: r };
+    if (r.kind === "builtin") throw new Error("内置中转不需要部署命令");
+
+    const token = "rl_" + crypto.randomBytes(20).toString("hex");
+    db.prepare("UPDATE relays SET token_hash = ? WHERE id = ?")
+      .run(crypto.createHash("SHA256").update(token).digest("hex"), r.id);
+    addEvent("relay", `为 ${r.name} 生成接入命令（重生成后旧命令失效）`);
+    return { script: relayScript(r, cfg, token, publicBase(req)), relay: r };
+  }
+
+  if (url.pathname === "/api/relay/state" && method === "GET") {
+    return { ok: true };
   }
 
 

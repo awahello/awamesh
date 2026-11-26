@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cfg, log } from "./config.js";
-import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig, splitRoutes, deployTailscale, publicBase } from "./api.js";
+import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig, splitRoutes, deployTailscale, publicBase, relayAlive } from "./api.js";
 import { seedIfEmpty, pruneEvents, addEvent, demoHeartbeat, clearDemo } from "./db.js";
 import {
   ensureAdminCredential, verifyCredential, sessionToken, validSession,
@@ -440,6 +440,11 @@ const server = http.createServer(async (req, res) => {
       if (!/^awa_[a-f0-9]{8,}$/.test(key)) return json(res, 400, { error: "密钥格式不正确" });
       res.writeHead(200, { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "no-store" });
       return res.end(joinScript(key, url.searchParams.get("hostname") || "", publicBase(req)));
+    }
+
+    if (p === "/api/relay/state" && req.method === "GET") {
+      const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      return json(res, 200, relayAlive(token));
     }
 
     if (p === "/api/health") return json(res, 200, { ok: true, version: cfg.version });

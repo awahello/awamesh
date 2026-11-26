@@ -268,9 +268,7 @@ async function viewDevices(main) {
         return;
       }
       if (b.dataset.op === "del") {
-        if (!confirm(`彻底删除 ${dev.name}？\n\n控制台记录、密钥、事件都会清掉；\n该节点下次同步（≤60 秒）会自动把本机接口、配置、定时器一并删干净。`)) return;
-        try { await api(`/api/devices/${encodeURIComponent(id)}/delete`, { method: "POST", body: "{}" }); toast("已删除，节点将在 60 秒内自清理"); renderView(); }
-        catch (e) { toast(e.message, true); }
+        openDeleteDevice(dev);
         return;
       }
       if (b.dataset.op === "revoke") {
@@ -335,6 +333,7 @@ async function viewRelays(main) {
             ${r.kind === "builtin" ? `<span class="tag info">内置</span>` : r.visibility === "private" ? `<span class="tag info">仅内网</span>` : `<span class="tag">公网</span>`}
           </div>
           <div class="mono muted" style="font-size:12px;margin-bottom:8px">${r.kind === "builtin" ? "控制台自身的 WireGuard 转发（无需部署）" : esc(r.addr) + ":" + r.port}</div>
+          ${r.kind === "builtin" ? "" : `<div class="dim" style="font-size:11px;margin-bottom:8px">删除或「从地图摘除」后，那台机器 60 秒内自动卸载 derper</div>`}
           <div style="display:flex;justify-content:space-between;font-size:12px" class="muted">
             <span>本月 ${fmtGb(r.used_gb)}${r.quota_gb ? " / " + fmtGb(r.quota_gb) : ""}</span>
             <span>${r.state === "online" ? "在线" : r.state === "offline" ? "不可达" : "未验证"}</span>
@@ -365,7 +364,7 @@ async function viewRelays(main) {
       const r = d.relays.find(x => x.id === b.dataset.relay);
       try {
         if (b.dataset.op === "del") {
-          if (!confirm(`删除中继 ${r.name}？只删面板记录，不影响那台机器上的进程。`)) return;
+          if (!confirm(`删除中继 ${r.name}？\n\n控制台记录会删掉；如果那台机器是用「接入命令」装的，derper 容器和 systemd 会在 60 秒内自动卸载。`)) return;
           await api(`/api/relays/${encodeURIComponent(r.id)}/delete`, { method: "POST", body: "{}" });
           toast("已删除");
           renderView();
@@ -956,6 +955,55 @@ async function openWgCreate() {
   };
 }
 
+
+
+/* ---------------- 删除设备：自动清理 + 手动卸载兜底 ---------------- */
+async function openDeleteDevice(dev) {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>删除设备 · ${esc(dev.name)}</h3>
+      <div class="sub">控制台会清掉记录、密钥和事件；那台机器在 ≤60 秒内自动卸载（接口、配置、定时器、凭据全部删除）</div>
+      <div class="card" style="margin:0 0 12px">
+        <div style="font-size:11.5px;line-height:1.8" class="dim">
+          · 机器在线：收到 401 即刻自清理，日志会写「凭据已失效，正在清理本机配置」<br>
+          · 机器离线或换了地址：回来时自动清理；也可以现在复制下面的命令手动清
+        </div>
+      </div>
+      <div id="delOut"></div>
+      <div class="modal-actions">
+        <button class="btn" data-act="close">取消</button>
+        <button class="btn" data-act="cmd">手动卸载命令</button>
+        <button class="btn danger" data-act="ok">确认删除</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  mask.querySelector('[data-act="close"]').onclick = close;
+
+  mask.querySelector('[data-act="cmd"]').onclick = async () => {
+    try {
+      const u = await api(`/api/devices/${encodeURIComponent(dev.id)}/uninstall`);
+      mask.querySelector("#delOut").innerHTML = `
+        <div class="dim" style="font-size:11px">Linux / OpenWrt（root）：</div>
+        <div class="code">${esc(u.shell)}</div>
+        <div class="dim" style="font-size:11px">Windows（管理员终端）：</div>
+        <div class="code">${esc(u.ps)}</div>`;
+    } catch (e) { toast(e.message, true); }
+  };
+
+  mask.querySelector('[data-act="ok"]').onclick = async () => {
+    try {
+      await api(`/api/devices/${encodeURIComponent(dev.id)}/delete`, { method: "POST", body: "{}" });
+      toast("已删除，节点将在 60 秒内自清理");
+      close();
+      renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+}
 
 /* ---------------- 角色：节点 / 中继 / 网关 / 出口 / 服务端 ---------------- */
 function openRoles(dev) {
