@@ -145,6 +145,7 @@ done
 [ -n "\${ADDR:-}" ] || { echo "    控制台没有返回地址"; exit 1; }
 
 echo "==> 4/4 写入配置并启动"
+mkdir -p /etc/wireguard 2>/dev/null || true
 CONF="/etc/wireguard/$IFACE.conf"
 {
   echo "[Interface]"
@@ -228,16 +229,21 @@ else
 fi
 
 echo "==> 4.5/4 安装全网状刷新（每 60 秒同步一次对端表）"
+BINDIR=/usr/local/bin
+[ -d "$BINDIR" ] || { mkdir -p "$BINDIR" 2>/dev/null || true; }
+[ -d "$BINDIR" ] || BINDIR=/usr/bin
+[ -d "$BINDIR" ] || BINDIR=/tmp
 if [ -n "\${NODETOKEN:-}" ]; then
   printf '%s' "$NODETOKEN" > /etc/wireguard/awa.token
   chmod 600 /etc/wireguard/awa.token
-  cat > /usr/local/bin/awa-peers <<PEERS
+  cat > "$BINDIR/awa-peers" <<PEERS
 #!/bin/sh
 SERVER="$SERVER"; IFACE="$IFACE"; TOKEN="\$(cat /etc/wireguard/awa.token)"
 PUBIP="\$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+TSIP="\$(tailscale ip -4 2>/dev/null | head -1)"
 [ -n "\$PUBIP" ] && curl -fsS -X POST "\$SERVER/api/join/hit" \
   -H "Authorization: Bearer \$TOKEN" -H 'Content-Type: application/json' \
-  -d "{\\\"endpoint\\\":\\\"\$PUBIP:$(wg show \$IFACE listen-port 2>/dev/null || echo 51820)\\\"}" >/dev/null 2>&1 || true
+  -d "{\\\"endpoint\\\":\\\"\$PUBIP:$(wg show \$IFACE listen-port 2>/dev/null || echo 51820)\\\",\\\"ts\\\":\\\"\$TSIP\\\"}" >/dev/null 2>&1 || true
 CODE="\$(curl -sS -o /tmp/awa.state -w '%{http_code}' --max-time 10 \\
   -H "Authorization: Bearer \$TOKEN" "\$SERVER/api/join/state?format=shell" 2>/dev/null || echo 000)"
 
@@ -279,7 +285,7 @@ while read -r kind a b c _rest; do
     done < /tmp/awa.state
 rm -f /tmp/awa.state
 PEERS
-  chmod +x /usr/local/bin/awa-peers
+  chmod +x "$BINDIR/awa-peers"
 
   if command -v systemctl >/dev/null 2>&1; then
     cat >/etc/systemd/system/awa-peers.service <<'EOF'
@@ -304,7 +310,7 @@ EOF
     /usr/local/bin/awa-peers || true
     echo "    已安装 awa-peers.timer（每 60 秒）"
   else
-    (crontab -l 2>/dev/null | grep -v awa-peers; echo "*/1 * * * * /usr/local/bin/awa-peers >/dev/null 2>&1") | crontab -
+    (crontab -l 2>/dev/null | grep -v awa-peers; echo "*/1 * * * * $BINDIR/awa-peers >/dev/null 2>&1") | crontab -
     /usr/local/bin/awa-peers || true
     echo "    已写入 crontab（每分钟）"
   fi
@@ -456,7 +462,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/join/hit" && req.method === "POST") {
       const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
       const body = await readBody(req);
-      return json(res, 200, updateNodeEndpoint(token, body?.endpoint, body?.port));
+      return json(res, 200, await updateNodeEndpoint(token, body?.endpoint, body?.port, body?.ts));
     }
 
     const dp = p.match(/^\/dp\/(dp_[a-z0-9]{8,})$/i);

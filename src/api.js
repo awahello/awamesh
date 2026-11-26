@@ -173,10 +173,17 @@ export function peersForNode(nodeToken) {
 }
 
 /** 节点每次刷新时顺带上报自己的 endpoint（公网 IP 可能变） */
-export async function updateNodeEndpoint(nodeToken, endpoint, port) {
+export async function updateNodeEndpoint(nodeToken, endpoint, port, tsIp) {
   const hash = crypto.createHash("SHA256").update(String(nodeToken || "")).digest("hex");
   const self = db.prepare("SELECT * FROM devices WHERE node_token = ?").get(hash);
   if (!self) throw Object.assign(new Error("节点凭据无效"), { status: 401 });
+
+  // Tailscale 地址单独记录，用于在面板上显示兜底状态
+  if (tsIp !== undefined) {
+    const v = String(tsIp || "").trim().slice(0, 60);
+    db.prepare("UPDATE devices SET ts_ip = ?, ts_at = ? WHERE id = ?").run(v || null, v ? now() : null, self.id);
+  }
+
   const ep = String(endpoint || "").trim().slice(0, 120);
   if (!ep) return { ok: true, changed: false };
   db.prepare("UPDATE devices SET endpoint = ?, reported_endpoint = ?, wg_port = ? WHERE id = ?")
@@ -944,6 +951,8 @@ ingress:
       rx: row?.rx ?? null,
       tx: row?.tx ?? null,
       alive: !!hs && t - hs < 180,
+      tsIp: dev.ts_ip || "",
+      tsAgo: dev.ts_at ? t - dev.ts_at : null,
       hints: !managed
         ? ["控制台未托管 awa0，读不到握手状态：先解决 NET_ADMIN（见设置页检测结果）"]
         : !row
@@ -952,6 +961,20 @@ ingress:
             ? ["从未握手：UDP 51820 到控制台不通（云安全组 / 实例 iptables / 端口映射）"]
             : [],
     };
+  }
+
+
+  // 生成这台设备的 Tailscale 加入命令（管理端才可调用，会返回明文 key）
+  if (seg[0] === "devices" && seg[2] === "ts-command" && method === "POST") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+    const p = tsProfile();
+    if (!p.authkey) throw new Error("还没配 Tailscale authkey（设置 → 兜底通道）");
+    const cmd = p.loginServer
+      ? `tailscale up --authkey '${p.authkey}' --hostname '${dev.name}-awa' --login-server '${p.loginServer}' --accept-routes`
+      : `tailscale up --authkey '${p.authkey}' --hostname '${dev.name}-awa' --accept-routes`;
+    addEvent("device", `为 ${dev.name} 生成 Tailscale 加入命令`, seg[1]);
+    return { command: cmd, installed: !!dev.ts_ip, tsIp: dev.ts_ip || "" };
   }
 
   if (seg[0] === "devices" && seg[2] === "uninstall" && method === "GET") {
@@ -1025,6 +1048,7 @@ ingress:
       enabled: p.enabled,
       hint: p.authkey ? p.authkey.slice(0, 8) + "…" : "",
       loginServer: p.loginServer,
+      devices: db.prepare("SELECT COUNT(*) c FROM devices WHERE ts_ip IS NOT NULL AND revoked_at IS NULL").get().c,
     };
   }
 

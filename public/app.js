@@ -279,6 +279,7 @@ async function viewDevices(main) {
               `# 接口：${st.managed ? "已接管 " + st.iface : "未托管（无 NET_ADMIN）"}`,
               `# 对端：${st.found ? "在接口里" : "不在接口里"} · endpoint：${st.endpoint || "—"}`,
               `# 握手：${ago} · 收 ${st.rx ?? "?"} B / 发 ${st.tx ?? "?"} B · ${st.alive ? "在线" : "离线"}`,
+              `# Tailscale：${st.tsIp ? st.tsIp + (st.tsAgo != null ? "（" + st.tsAgo + " 秒前上报）" : "") : "未接入（WireGuard 通了就不会装）"}`,
               ...(st.hints || []).map(h => "# ! " + h),
               "",
             ].join("\n");
@@ -322,12 +323,16 @@ function rowDevice(x) {
   return `<div class="row ${x.path === "relay" ? "warn" : ""}">
     <div class="cell" style="display:flex;align-items:center;gap:8px">
       <span class="dot ${x.revoked_at ? "bad" : x.online ? "ok" : "off"}"></span>
-      <span><b>${esc(x.name)}</b>${x.tags?.length ? `<div class="dim" style="font-size:11px">${esc(x.tags.join(" · "))}</div>` : ""}</span>
+      <span>
+        <b>${esc(x.name)}</b>
+        ${x.ts_ip ? `<span class="tag ${x.ts_at && (Date.now() / 1000 - x.ts_at) < 600 ? "info" : ""}" title="Tailscale 兜底地址${x.ts_at ? " · " + Math.round((Date.now() / 1000 - x.ts_at)) + " 秒前上报" : ""}">TS ${esc(x.ts_ip)}</span>` : ""}
+        ${x.tags?.length ? `<div class="dim" style="font-size:11px">${esc(x.tags.join(" · "))}</div>` : ""}
+      </span>
     </div>
     <div class="cell mono muted">${esc(x.mesh_ip || "—")}</div>
     <div class="cell">${roles || `<span class="tag">节点</span>`}</div>
     <div class="cell" style="font-size:12px">${path}</div>
-    <div class="cell mono dim" style="font-size:11px" title="${esc(x.reported_endpoint || x.endpoint || "无公网地址")}">${x.reported_endpoint ? esc(x.reported_endpoint) : `<span class="tag">经控制台</span>`}</div>
+    <div class="cell mono dim" style="font-size:11px" title="${esc(x.reported_endpoint || x.endpoint || "无公网地址")}${x.endpointMismatch ? " · 与控制台看到的源地址不一致（可能有代理/多层 NAT）" : ""}">${x.reported_endpoint ? esc(x.reported_endpoint) + (x.endpointMismatch ? " ⚠" : "") : `<span class="tag">经控制台</span>`}</div>
     <div class="cell dim" style="font-size:12px">${x.online ? fmtTime(x.last_seen) : x.last_seen ? fmtTime(x.last_seen) : "—"}</div>
     <div style="display:flex;gap:6px;justify-content:flex-end">
       <button class="btn sm primary" data-dev="${esc(x.id)}" data-op="deploy">一键部署</button>
@@ -680,7 +685,7 @@ async function viewSettings(main) {
       ${wg ? `
 
       <div class="card">
-        <div class="card-h"><b>兜底通道 · Tailscale</b><span>${ts.enabled ? "已启用 " + esc(ts.hint) : "未配置"}</span></div>
+        <div class="card-h"><b>兜底通道 · Tailscale</b><span>${ts.enabled ? "已启用 " + esc(ts.hint) + (ts.devices ? ` · ${ts.devices} 台已接入` : "") : "未配置"}</span></div>
         <p class="dim" style="font-size:11px;margin:0 0 8px">
           WireGuard 走 UDP，UDP 被封（公司/酒店/校园网）时连不上。填一个 Tailscale authkey，
           节点部署时脚本会先试 WireGuard，20 秒握不上手就自动改走 443 的 DERP 兜底。
@@ -1250,6 +1255,7 @@ async function openDeploy(dev) {
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn primary" data-act="copy">复制命令</button>
         <button class="btn" data-act="win">Windows 命令</button>
+        <button class="btn" data-act="ts">Tailscale 兜底命令</button>
       </div>
       <div id="winBox"></div>`;
     mask.querySelector('[data-act="copy"]').onclick = async () => {
@@ -1257,6 +1263,15 @@ async function openDeploy(dev) {
       catch { toast("复制失败，请手动选择", true); }
     };
     const winCmd = "irm '" + location.origin + "/dp/" + r.token + "/windows' | iex";
+    mask.querySelector('[data-act="ts"]').onclick = async () => {
+      try {
+        const t = await api(`/api/devices/${encodeURIComponent(dev.id)}/ts-command`, { method: "POST", body: "{}" });
+        mask.querySelector("#winBox").innerHTML = `
+          <div class="dim" style="font-size:11px;margin-top:10px">该机器上执行（先装 tailscale；这条会让它加入 tailnet，之后面板这里会显示 TS 100.x）：</div>
+          <div class="code">${esc(t.command)}</div>
+          <div class="dim" style="font-size:11px">${t.installed ? "当前已上报 Tailscale 地址：" + esc(t.tsIp) : "当前还没有上报 Tailscale 地址"}</div>`;
+      } catch (e) { toast(e.message, true); }
+    };
     mask.querySelector('[data-act="win"]').onclick = () => {
       mask.querySelector("#winBox").innerHTML =
         '<div class="dim" style="font-size:11px;margin-top:10px">Windows（管理员终端，需先装 WireGuard 客户端）：</div>' +

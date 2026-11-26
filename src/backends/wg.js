@@ -45,6 +45,18 @@ function profile() {
   };
 }
 
+
+function hostOf(ep) {
+  return String(ep || "").replace(/^\[/, "").replace(/\]:\d+$/, "").replace(/:\d+$/, "");
+}
+
+/** 有自报地址、且和控制台看到的源地址一致，才算「有直连条件」 */
+function p2pOk(d) {
+  if (!d.reported_endpoint) return false;
+  if (!d.endpoint) return true;            // 还没学到，先按自报值算
+  return hostOf(d.reported_endpoint) === hostOf(d.endpoint);
+}
+
 export const wgBackend = {
   name: "wg",
   available: true,
@@ -60,9 +72,13 @@ export const wgBackend = {
       tags: d.tags ? d.tags.split(",").filter(Boolean) : [],
       roles: (d.roles || "node").split(","),
       online: !!d.last_seen && now() - d.last_seen < 180 && !d.revoked_at,
-      // 有自己上报的公网地址 → 有直连条件；否则只能经控制台转发
-      path: d.last_seen && now() - d.last_seen < 180 ? (d.reported_endpoint ? "direct" : "relay") : "",
-      relay: d.last_seen && now() - d.last_seen < 180 && !d.reported_endpoint ? "本机 · 控制台" : null,
+      // 直连条件：节点自报的地址 与 控制台从内核看到的源地址 对得上。
+      // 对不上通常说明这台机器走了代理/多层 NAT —— 自报的是代理出口，别的节点连不到。
+      endpointMismatch: !!d.reported_endpoint && !!d.endpoint && hostOf(d.reported_endpoint) !== hostOf(d.endpoint),
+      path: d.last_seen && now() - d.last_seen < 180
+        ? (p2pOk(d) ? "direct" : "relay")
+        : "",
+      relay: d.last_seen && now() - d.last_seen < 180 && !p2pOk(d) ? "本机 · 控制台" : null,
     }));
   },
 

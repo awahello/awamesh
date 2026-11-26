@@ -45,7 +45,8 @@ fi
 command -v wg >/dev/null 2>&1 || die "这台机器装不上 wireguard-tools，请先手动安装（或换一台机器）"
 
 say "2/5 拉取配置"
-mkdir -p /etc/wireguard
+mkdir -p /etc/wireguard 2>/dev/null || true
+[ -d /etc/wireguard ] || { mkdir -p /etc/wireguard; }
 umask 077
 CONF="/etc/wireguard/$IFACE.conf"
 curl -fsS --max-time 15 "$SERVER/api/deploy/config?token=$TOKEN" -o "$CONF" || die "拉取配置失败：凭据可能已失效（回面板点「一键部署」重新生成），或控制台地址不可达"
@@ -214,10 +215,17 @@ else
 fi
 
 say "5/5 安装对端自动同步（每 60 秒）"
+
+# OpenWrt 默认没有 /usr/local/bin，先建，建不了就退回 /usr/bin
+BINDIR=/usr/local/bin
+[ -d "$BINDIR" ] || { mkdir -p "$BINDIR" 2>/dev/null || true; }
+[ -d "$BINDIR" ] || BINDIR=/usr/bin
+[ -d "$BINDIR" ] || BINDIR=/tmp
+say "    安装到 $BINDIR"
 printf '%s' "$TOKEN" > /etc/wireguard/awa.token
 chmod 600 /etc/wireguard/awa.token
 
-cat > /usr/local/bin/awa-peers <<'PEERS'
+cat > "$BINDIR/awa-peers" <<'PEERS'
 #!/bin/sh
 SERVER="@@SERVER@@"
 IFACE="awa0"
@@ -225,10 +233,11 @@ IFACE="awa0"
 TOKEN="$(cat /etc/wireguard/awa.token 2>/dev/null)" || exit 0
 [ -n "$TOKEN" ] || exit 0
 PUBIP="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+TSIP="$(tailscale ip -4 2>/dev/null | head -1)"
 if [ -n "$PUBIP" ]; then
   curl -fsS -X POST "$SERVER/api/join/hit" -H "Authorization: Bearer $TOKEN" \
     -H 'Content-Type: application/json' \
-    -d "{\"endpoint\":\"$PUBIP:$(wg show "$IFACE" listen-port 2>/dev/null || echo 51820)\"}" >/dev/null 2>&1 || true
+    -d "{\"endpoint\":\"$PUBIP:$(wg show "$IFACE" listen-port 2>/dev/null || echo 51820)\",\"ts\":\"$TSIP\"}" >/dev/null 2>&1 || true
 fi
 CODE="$(curl -sS -o /tmp/awa.state -w '%{http_code}' --max-time 10 \
   -H "Authorization: Bearer $TOKEN" "$SERVER/api/join/state?format=shell" 2>/dev/null || echo 000)"
@@ -268,7 +277,7 @@ case "$CODE" in
       systemctl daemon-reload >/dev/null 2>&1 || true
     fi
     command -v crontab >/dev/null 2>&1 && { crontab -l 2>/dev/null | grep -v awa-peers | crontab - 2>/dev/null || true; }
-    rm -f /usr/local/bin/awa-peers
+    rm -f /usr/local/bin/awa-peers /usr/bin/awa-peers /tmp/awa-peers
     echo "awamesh: 已清理（接口、配置、定时器、凭据都已移除）" >&2
     exit 0
     ;;
@@ -300,7 +309,7 @@ while read -r kind a b c _rest; do
 rm -f /tmp/awa.state
 PEERS
 printf '%s' "$IFACE" > /etc/wireguard/awa.iface
-chmod +x /usr/local/bin/awa-peers
+chmod +x "$BINDIR/awa-peers"
 
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
   cat > /etc/systemd/system/awa-peers.service <<'EOF'
@@ -325,11 +334,11 @@ EOF
   /usr/local/bin/awa-peers >/dev/null 2>&1 || true
   say "    已启用 awa-peers.timer"
 elif command -v crontab >/dev/null 2>&1; then
-  (crontab -l 2>/dev/null | grep -v awa-peers; echo "*/1 * * * * /usr/local/bin/awa-peers >/dev/null 2>&1") | crontab - 2>/dev/null || true
+  (crontab -l 2>/dev/null | grep -v awa-peers; echo "*/1 * * * * $BINDIR/awa-peers >/dev/null 2>&1") | crontab - 2>/dev/null || true
   /usr/local/bin/awa-peers >/dev/null 2>&1 || true
   say "    已写入 crontab（每分钟）"
 else
-  say "    没有 systemd/cron，对端表需手动刷新：/usr/local/bin/awa-peers"
+  say "    没有 systemd/cron，对端表需手动刷新：$BINDIR/awa-peers"
 fi
 
 echo
