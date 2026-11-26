@@ -1155,9 +1155,11 @@ function openRoles(dev) {
       </div>
       <label class="dim" style="font-size:11px;margin-top:12px;display:block">发布的内网段（逗号分隔，网关角色用）</label>
       <input id="rRoutes" value="${esc((dev.routes || "").toString())}" placeholder="192.168.1.0/24, 10.0.10.0/24" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
+      <div id="tOut"></div>
       <div class="modal-actions">
         <button class="btn" data-act="close">取消</button>
-        <button class="btn primary" data-act="ok">保存</button>
+        <button class="btn" data-act="local">只本地登记</button>
+        <button class="btn primary" data-act="publish">发布到 Cloudflare</button>
       </div>
     </div>`;
   document.body.appendChild(mask);
@@ -1423,7 +1425,7 @@ function openAddTunnel() {
   mask.innerHTML = `
     <div class="modal">
       <h3>添加隧道</h3>
-      <div class="sub">登记一条「域名 → 内网地址」，用于对照 Cloudflare 上的 ingress</div>
+      <div class="sub">填好点「发布到 Cloudflare」会真的建隧道、写 ingress、改 DNS；也可以只在本地面板登记</div>
       <label class="dim" style="font-size:11px">域名</label>
       <input id="tHost" placeholder="nas.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
       <label class="dim" style="font-size:11px">后端（IP 或主机:端口）</label>
@@ -1438,14 +1440,35 @@ function openAddTunnel() {
   const onKey = (e) => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
-  mask.querySelector('[data-act="ok"]').onclick = async () => {
+  mask.querySelector('[data-act="local"]').onclick = async () => {
     try {
       await api("/api/tunnels", { method: "POST", body: JSON.stringify({
         hostname: mask.querySelector("#tHost").value,
         backend: mask.querySelector("#tBack").value,
       })});
-      close(); toast("已添加"); renderView();
+      close(); toast("已在本地面板登记（没有写入 Cloudflare）"); renderView();
     } catch (e) { toast(e.message, true); }
+  };
+
+  mask.querySelector('[data-act="publish"]').onclick = async () => {
+    const out = mask.querySelector("#tOut");
+    out.innerHTML = '<div class="dim" style="font-size:11px;margin:8px 0">写入中…（建隧道 → 写 ingress → 改 DNS）</div>';
+    try {
+      const h = mask.querySelector("#tHost").value.trim();
+      let b = mask.querySelector("#tBack").value.trim();
+      if (b && !/^https?:\/\//.test(b)) b = "http://" + b;
+      const r = await api("/api/tunnels/publish", { method: "POST", body: JSON.stringify({ hostname: h, backend: b }) });
+      out.innerHTML = `
+        <div style="font-size:11.5px;margin:8px 0;line-height:1.8">
+          <div>隧道：<span class="mono">${esc(r.tunnelName)}</span> <span class="dim">${esc(r.tunnelId)}</span></div>
+          <div>ingress：已写入 <span class="mono">${esc(r.hostname)} → ${esc(r.backend)}</span></div>
+          <div>DNS：${r.dns === "ok" ? '<span style="color:var(--ok)">已指向 ' + esc(r.hostname) + '</span>' : '<span style="color:var(--bad)">未修改：' + esc(r.dnsError || "跳过") + "</span>"}</div>
+        </div>
+        ${r.command ? `<div class="dim" style="font-size:11px">在 mesh 内任意一台机器上起连接器（需要 --network host）：</div><div class="code">${esc(r.command)}</div>` : '<div class="dim" style="font-size:11px">拿不到连接器 token：Token 需要 Account → Cloudflare Tunnel → Write</div>'}`;
+      toast("已发布到 Cloudflare");
+    } catch (e) {
+      out.innerHTML = `<div style="font-size:11.5px;margin:8px 0;color:var(--bad)">失败：${esc(e.message)}</div>`;
+    }
   };
 }
 

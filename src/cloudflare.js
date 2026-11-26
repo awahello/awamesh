@@ -49,6 +49,60 @@ export async function listAccounts() {
   return cf("/accounts?per_page=50");
 }
 
+/** 找一个同名隧道，没有就建一个（需要 Account → Cloudflare Tunnel → Write） */
+export async function ensureTunnel(accountId, name = "awamesh") {
+  const list = (await cf(`/accounts/${accountId}/cfd_tunnel?is_deleted=false&per_page=50`)) || [];
+  const hit = list.find(t => t.name === name);
+  if (hit) return hit;
+  return cf(`/accounts/${accountId}/cfd_tunnel`, {
+    method: "POST",
+    body: JSON.stringify({ name, config_src: "cloudflare" }),
+  });
+}
+
+/** 把某个域名指向 mesh 地址，写进隧道 ingress（保留其它规则，末尾补 404） */
+export async function publishIngress(accountId, tunnelId, hostname, backend) {
+  let ingress = [];
+  try {
+    const cur = await cf(`/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`);
+    ingress = (cur?.config?.ingress || []).filter(r => r.hostname && r.hostname !== hostname);
+  } catch { ingress = []; }
+  const rules = [...ingress, { hostname, service: backend }, { service: "http_status:404" }];
+  await cf(`/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
+    method: "PUT",
+    body: JSON.stringify({ config: { ingress: rules } }),
+  });
+  return rules;
+}
+
+/** 从最长的后缀开始找这个域名属于哪个 zone */
+export async function zoneFor(hostname) {
+  const parts = String(hostname).split(".");
+  for (let i = 1; i < parts.length - 1; i++) {
+    const cand = parts.slice(i).join(".");
+    const zones = await cf(`/zones?name=${cand}`).catch(() => []);
+    if (zones && zones[0]) return zones[0];
+  }
+  return null;
+}
+
+/** 把域名 CNAME 到 <tunnelId>.cfargotunnel.com 并开启代理（需要 Zone → DNS → Write） */
+export async function pointDns(zone, hostname, tunnelId) {
+  const target = `${tunnelId}.cfargotunnel.com`;
+  const body = JSON.stringify({ type: "CNAME", name: hostname, content: target, proxied: true, ttl: 1 });
+  const existing = await cf(`/zones/${zone.id}/dns_records?name=${hostname}`).catch(() => []);
+  if (existing && existing[0]) {
+    return cf(`/zones/${zone.id}/dns_records/${existing[0].id}`, { method: "PATCH", body });
+  }
+  return cf(`/zones/${zone.id}/dns_records`, { method: "POST", body });
+}
+
+/** 取连接器 token，给 cloudflared 用 */
+export async function tunnelToken(accountId, tunnelId) {
+  const r = await cf(`/accounts/${accountId}/cfd_tunnel/${tunnelId}/token`).catch(() => null);
+  return typeof r === "string" ? r : r?.token || "";
+}
+
 /** 只验证「这个 Token 能不能读这个账户的隧道」，轻量调用 */
 export async function pingAccount(accountId) {
   const list = await cf(`/accounts/${accountId}/cfd_tunnel?per_page=1`);

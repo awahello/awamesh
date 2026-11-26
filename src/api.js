@@ -1,7 +1,7 @@
 import { cfg } from "./config.js";
 import { db, now, setting, listRelays, listTunnels, listEvents, addEvent } from "./db.js";
 import { backend } from "./backends/index.js";
-import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows } from "./cloudflare.js";
+import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows, ensureTunnel, publishIngress, zoneFor, pointDns, tunnelToken } from "./cloudflare.js";
 import crypto from "node:crypto";
 import { wg, isManaged } from "./wgsrv.js";
 import { hostInCidr, clientConfig as clientConfigText } from "./wg.js";
@@ -1167,6 +1167,46 @@ ingress:
       accounts: accounts.map(a => ({ id: a.id, name: a.name })),
       canListAccounts: accounts.length > 0,
     };
+  }
+
+
+  // 真正把域名发布到 Cloudflare：隧道 + ingress + DNS 一次做完
+  if (url.pathname === "/api/tunnels/publish" && method === "POST") {
+    if (!cfEnabled()) throw Object.assign(new Error("还没配 Cloudflare Token（设置 → Cloudflare）"), { status: 400 });
+    const hostname = String(body?.hostname || "").trim().toLowerCase().slice(0, 120);
+    const backend = String(body?.backend || "").trim().slice(0, 120);
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(hostname)) throw new Error("域名格式不对，例：nas.example.com");
+    if (!/^https?:\/\/[^\s]+$/.test(backend)) throw new Error("后端要写成 http://10.88.0.5:8080");
+
+    const account = cfAccount();
+    if (!account) throw new Error("先填 Account ID（设置 → Cloudflare）");
+
+    const tun = await ensureTunnel(account, body?.tunnelName || "awamesh");
+    const rules = await publishIngress(account, tun.id, hostname, backend);
+
+    let dns = "skipped";
+    let dnsError = "";
+    try {
+      const zone = await zoneFor(hostname);
+      if (!zone) throw new Error(`找不到 ${hostname} 属于哪个 zone（Token 需要 Zone → DNS → Write）`);
+      await pointDns(zone, hostname, tun.id);
+      dns = "ok";
+    } catch (e) {
+      dns = "failed";
+      dnsError = e.message;
+    }
+
+    const token = await tunnelToken(account, tun.id);
+    db.prepare(`INSERT INTO tunnels(id,name,hostname,backend,health,latency_ms,last_check,migratable)
+      VALUES(?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET backend=excluded.backend, name=excluded.name, last_check=excluded.last_check`)
+      .run("cf_" + tun.id + "_" + hostname, tun.name, hostname, backend.replace(/^https?:\/\//, ""), "unknown", null, now(), 0);
+
+    addEvent("tunnel", `发布 ${hostname} → ${backend}（隧道 ${tun.name}）`);
+    const command = token
+      ? `docker run -d --name cf-${tun.name} --restart unless-stopped --network host cloudflare/cloudflared:latest tunnel --no-autoupdate run --token ${token}`
+      : "";
+    return { ok: true, tunnelId: tun.id, tunnelName: tun.name, hostname, backend, ingress: rules, dns, dnsError, command, tokenAvailable: !!token };
   }
 
   if (url.pathname === "/api/tunnels/sync" && method === "POST") {

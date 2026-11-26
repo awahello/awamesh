@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 const env = process.env;
 
 export const cfg = {
-  version: "0.4.14",
+  version: "0.5.0",
   port: Number(env.AWA_PORT || 18443),
   host: env.AWA_HOST || "0.0.0.0",
   dataDir: path.resolve(env.AWA_DATA_DIR || "./data"),
