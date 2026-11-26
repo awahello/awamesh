@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cfg, log } from "./config.js";
-import { api, joinPeer, peersForNode, updateNodeEndpoint } from "./api.js";
+import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig } from "./api.js";
 import { seedIfEmpty, pruneEvents, addEvent, demoHeartbeat, clearDemo } from "./db.js";
 import {
   ensureAdminCredential, verifyCredential, sessionToken, validSession,
@@ -312,6 +312,23 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, updateNodeEndpoint(token, body?.endpoint, body?.port));
     }
 
+    const dp = p.match(/^\/dp\/(dp_[a-z0-9]{8,})$/i);
+    if (dp && req.method === "GET") {
+      const tpl = fs.readFileSync(new URL("./assets/deploy.sh", import.meta.url), "utf8");
+      const base = (cfg.controlUrl || `http://${req.headers.host || "127.0.0.1:" + cfg.port}`).replace(/\/$/, "");
+      const body = tpl.split("@@SERVER@@").join(base).split("@@TOKEN@@").join(dp[1]);
+      res.writeHead(200, { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "no-store" });
+      return res.end(body);
+    }
+
+    if (p === "/api/deploy/config" && req.method === "GET") {
+      const token = url.searchParams.get("token") || "";
+      if (!/^dp_[a-z0-9]{8,}$/i.test(token)) return json(res, 400, { error: "凭据格式不正确" });
+      const r = deployConfig(token, req.headers.host || "");
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+      return res.end(r.config);
+    }
+
     if (p === "/join.sh") {
       const key = url.searchParams.get("key") || "";
       if (!/^awa_[a-f0-9]{8,}$/.test(key)) return json(res, 400, { error: "密钥格式不正确" });
@@ -399,11 +416,20 @@ async function wgBoot() {
     _wgOn = false;
     setManaged(false);
     log("[wg] 接管失败，回退到手动模式：" + e.message);
+    const cap = capNetAdmin();
     log("[wg] 排查清单：");
-    log("[wg]   1) compose 里要有  cap_add: [NET_ADMIN]（建接口必需）与 SYS_MODULE（加载模块）");
-    log("[wg]   2) 宿主机内核要有 wireguard 模块：modprobe wireguard && lsmod | grep wireguard");
+    if (cap === false) {
+      log("[wg]   ✗ 容器实际没有 NET_ADMIN —— compose 的 cap_add 没生效");
+      log("[wg]     改完 compose 必须重建容器：docker compose up -d --force-recreate（restart 不会应用新权限）");
+      log("[wg]     仍然不行就临时加 privileged: true 验证，通了再回来收敛");
+    } else if (cap === true) {
+      log("[wg]   ✓ 容器已有 NET_ADMIN，那问题在内核：modprobe wireguard && lsmod | grep wireguard");
+    } else {
+      log("[wg]   1) compose 里要有 cap_add: [NET_ADMIN, SYS_MODULE]（建接口必需）");
+      log("[wg]   2) 改完必须 up -d --force-recreate，restart 不会应用新权限");
+    }
     log("[wg]   3) rootless Docker 里 NET_ADMIN 无效：docker info | grep -i rootless 应为 false");
-    log("[wg]   4) 实在不行把 privileged: true 打开（能跑通再回来收敛权限）");
+    log("[wg]   4) 宿主机内核要有 wireguard 模块：modprobe wireguard && lsmod | grep wireguard");
   }
 }
 
@@ -449,6 +475,18 @@ function ensureBuiltinRelay() {
     addEvent("relay", "内置中转已启用：控制台自身承担转发（无需部署 DERP）");
   } else {
     db.prepare("UPDATE relays SET state = 'online', last_health = ? WHERE id = 'r_builtin'").run(t);
+  }
+}
+
+
+/** 读 /proc/self/status 判断容器实际拿到了 NET_ADMIN（bit 12） */
+function capNetAdmin() {
+  try {
+    const line = fs.readFileSync("/proc/self/status", "utf8").split("\n").find(l => l.startsWith("CapEff:"));
+    const hex = (line || "").split(/\s+/)[1] || "0";
+    return ((BigInt("0x" + hex) >> 12n) & 1n) === 1n;
+  } catch {
+    return null;
   }
 }
 

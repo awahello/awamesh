@@ -250,8 +250,13 @@ async function viewDevices(main) {
       if (b.dataset.op === "conf") {
         try {
           const c = await api(`/api/devices/${encodeURIComponent(id)}/config`);
-          showCode(`${dev.name} · WireGuard 配置`, c.clientConfig || "该设备没有可用私钥（自助加入的节点私钥在其本机）");
+          const warn = c.endpointSet ? "" : "⚠ Endpoint 还没填（设置 → WireGuard 服务端），这份配置导入后连不上。\n\n";
+          showCode(`${dev.name} · WireGuard 配置`, warn + (c.clientConfig || "该设备没有可用私钥（自助加入的节点私钥在其本机）"));
         } catch (e) { toast(e.message, true); }
+        return;
+      }
+      if (b.dataset.op === "deploy") {
+        await openDeploy(dev);
         return;
       }
       if (b.dataset.op === "revoke") {
@@ -281,6 +286,7 @@ function rowDevice(x) {
     <div class="cell mono dim" style="font-size:11px" title="${esc(x.endpoint || "")}">${x.endpoint ? esc(x.endpoint) : `<span class="tag">经控制台</span>`}</div>
     <div class="cell dim" style="font-size:12px">${x.online ? fmtTime(x.last_seen) : x.last_seen ? fmtTime(x.last_seen) : "—"}</div>
     <div style="display:flex;gap:6px;justify-content:flex-end">
+      <button class="btn sm primary" data-dev="${esc(x.id)}" data-op="deploy">一键部署</button>
       <button class="btn sm" data-dev="${esc(x.id)}" data-op="conf">配置</button>
       <button class="btn sm" data-dev="${esc(x.id)}" data-op="rename">改名</button>
       <button class="btn sm danger" data-dev="${esc(x.id)}" data-op="revoke">吊销</button>
@@ -452,7 +458,7 @@ function guideCard(s, wg, cf) {
   const managed = !!(s.wgManaged);
   const peers = s.wgPeers || 0;
   const dot = (ok) => `<span class="dot ${ok ? "ok" : "warn"}"></span>`;
-  const cmd = `curl -fsSL '${location.origin}/join.sh?key=<在这里替换成生成的密钥>' | sh -s -- --hostname <设备名>`;
+  const cmd = `curl -fsSL '${location.origin}/dp/<设备的一键部署凭据>' | sh -s -- --iface awa0`;
   return `
   <div class="card" style="grid-column:1/-1">
     <div class="card-h"><b>快速上手</b><span>照着四步走，受控端只需要跑一条命令</span></div>
@@ -467,7 +473,7 @@ function guideCard(s, wg, cf) {
       </div>
       <div style="padding:10px;border-radius:8px;background:var(--surface-2)">
         <div style="display:flex;align-items:center;gap:6px;font-weight:500">${dot(peers > 0)} 3. 添加设备</div>
-        <div class="dim" style="font-size:11px;margin-top:4px">去「设备 → 添加设备」生成一次性密钥和命令</div>
+        <div class="dim" style="font-size:11px;margin-top:4px">去「设备」加一台，点那一行的「一键部署」拿命令；节点上跑完就上线</div>
       </div>
       <div style="padding:10px;border-radius:8px;background:var(--surface-2)">
         <div style="display:flex;align-items:center;gap:6px;font-weight:500">${dot(cf.tokenSet)} 4. 接 Cloudflare（可选）</div>
@@ -475,7 +481,7 @@ function guideCard(s, wg, cf) {
       </div>
     </div>
     <div style="margin-top:12px">
-      <div class="dim" style="font-size:11px">受控端（OpenWrt / Linux，root）要执行的命令长这样：</div>
+      <div class="dim" style="font-size:11px">受控端（OpenWrt / Linux，root）要执行的命令长这样（每台一个凭据，点「一键部署」自动生成）：</div>
       <div class="code">${esc(cmd)}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn sm" id="copyJoin">复制示例命令</button>
@@ -576,7 +582,7 @@ async function viewSettings(main) {
     };
   }
   main.querySelector("#copyJoin").onclick = async () => {
-    try { await navigator.clipboard.writeText(`curl -fsSL '${location.origin}/join.sh?key=<密钥>' | sh -s -- --hostname <设备名>`); toast("已复制，把 <密钥> 换成生成的 key"); }
+    try { await navigator.clipboard.writeText(`curl -fsSL '${location.origin}/dp/<设备凭据>' | sh -s -- --iface awa0`); toast("已复制；真实命令在设备列表点「一键部署」生成"); }
     catch { toast("复制失败，请手动选择", true); }
   };
   main.querySelector("#goDevices").onclick = () => { S.view = "devices"; render(); };
@@ -724,6 +730,45 @@ async function openWgCreate() {
       if (S.view === "devices") renderView();
     } catch (e) { toast(e.message, true); }
   };
+}
+
+/* ---------------- 一键部署：受控端只跑一条命令 ---------------- */
+async function openDeploy(dev) {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>一键部署 · ${esc(dev.name)}</h3>
+      <div class="sub">在目标机器上以 root 执行下面这一条，会自动装 wireguard-tools、写入配置、拉起接口、并开启对端自动同步</div>
+      <div id="dpBody"><div class="empty">生成中…</div></div>
+      <div class="modal-actions">
+        <button class="btn" data-act="close">关闭</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  mask.querySelector('[data-act="close"]').onclick = close;
+
+  try {
+    const r = await api(`/api/devices/${encodeURIComponent(dev.id)}/deploy`, { method: "POST", body: "{}" });
+    mask.querySelector("#dpBody").innerHTML = `
+      <div class="code">${esc(r.command)}</div>
+      <div class="dim" style="font-size:11px">Endpoint ${esc(r.endpoint)} · 地址 ${esc(r.address)}${r.applied ? " · 已自动加入服务端" : " · 服务端未托管，别忘了在你自己的 WireGuard 服务端加 [Peer]"}</div>
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn primary" data-act="copy">复制命令</button>
+      </div>`;
+    mask.querySelector('[data-act="copy"]').onclick = async () => {
+      try { await navigator.clipboard.writeText(r.command); toast("已复制"); }
+      catch { toast("复制失败，请手动选择", true); }
+    };
+  } catch (e) {
+    mask.querySelector("#dpBody").innerHTML = `<div class="card" style="border-color:var(--warn)"><b>还不能部署</b><div class="muted" style="margin-top:6px">${esc(e.message)}</div></div>
+      <div style="margin-top:10px"><button class="btn" data-act="goto">去设置填 Endpoint</button></div>`;
+    const g = mask.querySelector('[data-act="goto"]');
+    if (g) g.onclick = () => { close(); S.view = "settings"; render(); };
+  }
 }
 
 /* ---------------- wg（托管）：一条命令加入 ---------------- */

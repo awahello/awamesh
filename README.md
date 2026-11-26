@@ -107,22 +107,28 @@ awamesh 自己就是 WireGuard 服务端：密钥、地址、对端全部由控�
 
 > 「服务端公钥」显示的是 awamesh 自己生成的那把，不用改 —— 它就是这个 mesh 的服务端。
 
-**2）设备 → 添加设备** → 填设备名 + 有效期 → 得到一条命令：
+**2）设备 → 添加设备** → 填设备名，然后在那一行点 **「一键部署」**，得到一条命令：
 
 ```sh
-curl -fsSL 'http://你的控制台:18443/join.sh?key=awa_xxx' | sh -s -- --hostname router-home
+curl -fsSL 'http://你的控制台:18443/dp/dp_xxxxx' | sh -s -- --iface awa0
 ```
+
+这条命令是**自包含**的：凭据里绑定了这台设备，脚本自己去控制台取完整配置（含私钥、地址、服务端公钥、Endpoint），不需要你再复制粘贴任何东西。
 
 **3）在 OpenWrt / Linux 上以 root 执行它**，脚本会：
 
 ```
-① 装 wireguard-tools（apk / apt / dnf / yum 自动判断）
-② 本地生成密钥（私钥不出这台机器）
-③ 向控制台申请地址（一次性密钥，用完即废）
-④ 写 /etc/wireguard/awa0.conf 并 wg-quick up
+① 装 wireguard-tools（apk / apt / dnf / yum / opkg 自动判断）
+② 从控制台取配置写 /etc/wireguard/awa0.conf（权限 600）
+③ wg-quick up（没有 wg-quick 就退回 ip link + wg setconf）
+④ 上报公网地址，让别的节点能和它直连
+⑤ 装 awa-peers + systemd timer / cron，每 60 秒同步一次对端表
 ```
 
-**4）回到面板刷新**，那台设备已经出现，地址是 `10.88.0.x`。在线状态由控制台每 20 秒读一次 `wg show` 自动刷新，**不需要你手动同步**。
+**4）回到面板刷新**，那台设备变为在线。在线状态由控制台每 20 秒读一次 `wg show` 自动刷新，**不需要你手动同步**。
+
+> 凭据长期有效、每台独立；点「吊销」或重新生成会立刻让旧命令失效。
+> 也可以走更严格的方式（私钥不出节点）：设备页「添加设备 → 生成命令」用的是 `/join.sh?key=`，节点本地 `wg genkey`，只把公钥交回来。
 
 Windows：把控制台生成的手动配置（设备列表里点该设备的「配置」）用 WireGuard 官方客户端导入即可。
 
@@ -144,6 +150,36 @@ Windows：把控制台生成的手动配置（设备列表里点该设备的「�
 wg show awa0 endpoints          # 看对端 endpoint 是否已变成公网地址
 /usr/local/bin/awa-peers        # 手动触发一次 peer 表刷新
 ```
+
+### 没有 NET_ADMIN 怎么办（最常见的一步卡点）
+
+`[wg] 接管失败，回退到手动模式：... Operation not permitted` 说明容器没拿到建接口的权限。v0.2.1 起启动日志会直接告诉你卡在哪：
+
+```
+[wg]   ✗ 容器实际没有 NET_ADMIN —— compose 的 cap_add 没生效
+[wg]     改完 compose 必须重建容器：docker compose up -d --force-recreate（restart 不会应用新权限）
+```
+
+按这个顺序试，**每步都要 `up -d --force-recreate`**：
+
+```yaml
+# 1) 最小权限（推荐）
+    cap_add: [NET_ADMIN, SYS_MODULE]
+    sysctls: { net.ipv4.ip_forward: "1" }
+```
+
+```yaml
+# 2) 还不行：一次验证用 privileged（通了再收回来）
+    privileged: true
+```
+
+```bash
+# 3) 宿主机内核确认有 wireguard 模块
+modprobe wireguard && lsmod | grep wireguard
+docker info | grep -i rootless     # 应为 false，rootless 下 NET_ADMIN 无效
+```
+
+`privileged: true` 还起不来，基本就是内核没有 wireguard 模块（LXC/OpenVZ 小鸡常见），这种情况换一台 KVM 的机器，或者继续用手动模式。
 
 ### 如果没有 NET_ADMIN（纯面板模式）
 

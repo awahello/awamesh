@@ -4,7 +4,7 @@ import { backend } from "./backends/index.js";
 import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, listTunnels as cfListTunnels, toRows } from "./cloudflare.js";
 import crypto from "node:crypto";
 import { wg, isManaged } from "./wgsrv.js";
-import { hostInCidr } from "./wg.js";
+import { hostInCidr, clientConfig as clientConfigText } from "./wg.js";
 
 const r = (n, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
 
@@ -175,6 +175,80 @@ export async function updateNodeEndpoint(nodeToken, endpoint, port) {
   return { ok: true, changed: self.endpoint !== ep };
 }
 
+
+/** 有效 Endpoint：设置里的 > AWA_PUBLIC_HOST > 请求 Host 推导 */
+export function effectiveEndpoint(host) {
+  const bk = backend();
+  const pf = (typeof bk.profile === "function") ? (bk.profile() || {}) : {};
+  if (pf.endpoint) return String(pf.endpoint).trim();
+  const raw = process.env.AWA_PUBLIC_HOST || String(host || "").split(":")[0] || "";
+  const h = raw.trim();
+  if (!h || h === "localhost") return "";
+  return `${h}:${process.env.AWA_WG_PORT || 51820}`;
+}
+
+/** 一键部署：签发长期部署凭据（可吊销），返回一条可直接执行的命令 */
+export async function deployInfo(deviceId, host) {
+  const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(deviceId);
+  if (!dev) throw Object.assign(new Error("设备不存在"), { status: 404 });
+  if (dev.revoked_at) throw new Error("该设备已吊销，请先删除后重新添加");
+  const peer = db.prepare("SELECT * FROM wg_peers WHERE device_id = ?").get(deviceId);
+  if (!peer) throw new Error("该设备没有密钥记录");
+
+  const endpoint = effectiveEndpoint(host);
+  if (!endpoint) {
+    throw new Error("还没填 Endpoint：设置 → WireGuard 服务端，填这台机器的公网地址:51820（或给容器加 AWA_PUBLIC_HOST）");
+  }
+
+  const token = "dp_" + crypto.randomBytes(20).toString("hex");
+  db.prepare("UPDATE devices SET node_token = ?, endpoint = endpoint WHERE id = ?")
+    .run(crypto.createHash("SHA256").update(token).digest("hex"), deviceId);
+
+  const base = (cfg.controlUrl || `http://${String(host || "").split(":")[0]}:${cfg.port}`).replace(/\/$/, "");
+  const command = `curl -fsSL '${base}/dp/${token}' | sh -s -- --iface awa0`;
+
+  // 已经被控时顺手把对端补进本机接口（重建过容器也不会漏）
+  let applied = false;
+  if (isManaged()) {
+    try { await wg.addPeer(peer.public_key, peer.address); applied = true; } catch { /* ignore */ }
+  }
+
+  addEvent("device", `为 ${dev.name} 生成一键部署命令${applied ? "（已自动加入服务端）" : ""}`, deviceId);
+  return { command, endpoint, token, applied, name: dev.name, address: peer.address };
+}
+
+/** 部署脚本取配置：凭 token 换完整 wg 配置 */
+export function deployConfig(token, host) {
+  const hash = crypto.createHash("SHA256").update(String(token || "")).digest("hex");
+  const dev = db.prepare("SELECT * FROM devices WHERE node_token = ?").get(hash);
+  if (!dev) throw Object.assign(new Error("部署凭据无效"), { status: 401 });
+  if (dev.revoked_at) throw Object.assign(new Error("该设备已吊销"), { status: 401 });
+  const peer = db.prepare("SELECT * FROM wg_peers WHERE device_id = ?").get(dev.id);
+  if (!peer?.private_key) throw Object.assign(new Error("该设备没有私钥（自助加入的节点请用 /join.sh）"), { status: 400 });
+
+  const bk = backend();
+  const pf = (typeof bk.profile === "function") ? (bk.profile() || {}) : {};
+  const endpoint = effectiveEndpoint(host);
+  if (!endpoint) throw Object.assign(new Error("控制台未设置 Endpoint"), { status: 400 });
+  const subnet = pf.subnet || cfg.meshCidr;
+
+  return {
+    iface: "awa0",
+    hostname: dev.name,
+    endpoint,
+    config: clientConfigText({
+      privateKey: peer.private_key,
+      address: `${peer.address}/${subnet.split("/")[1] || 24}`,
+      serverPubKey: pf.serverPub,
+      endpoint,
+      subnet,
+      mtu: pf.mtu || cfg.mtu,
+      dns: pf.dns || "",
+      extraRoutes: pf.lanRoutes ? pf.lanRoutes.split(",").map(x => x.trim()).filter(Boolean) : [],
+    }),
+  };
+}
+
 /** 生成中继机的部署脚本：优先 Docker，其次 Go 安装；交互式 shell 里失败不会退出会话 */
 function relayScript(relay, cfg) {
   const port = relay.port || cfg.relayPort;
@@ -342,18 +416,24 @@ export async function api(req, res, url, body) {
     }
     const pf = be.profile?.() || {};
     const { clientConfig } = await import("./wg.js");
+    const endpoint = effectiveEndpoint(req.headers?.host || "");
     return {
+      endpointSet: !!endpoint,
       clientConfig: clientConfig({
         privateKey: peer.private_key,
         address: `${peer.address}/${(pf.subnet || cfg.meshCidr).split("/")[1] || 24}`,
         serverPubKey: pf.serverPub,
-        endpoint: pf.endpoint || "",
+        endpoint: endpoint || "<先在设置里填 Endpoint>",
         subnet: pf.subnet || cfg.meshCidr,
         mtu: pf.mtu || 1420,
         dns: pf.dns || "",
         extraRoutes: pf.lanRoutes ? pf.lanRoutes.split(",").map(x => x.trim()).filter(Boolean) : [],
       }),
     };
+  }
+
+  if (seg[0] === "devices" && seg[2] === "deploy" && method === "POST") {
+    return deployInfo(seg[1], req.headers?.host || "");
   }
 
   if (seg[0] === "devices" && seg[2] === "rename" && method === "POST") {
