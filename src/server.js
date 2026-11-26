@@ -540,8 +540,13 @@ async function wgBoot() {
     setManaged(false);
     log("[wg] 接管失败，回退到手动模式：" + e.message);
     const cap = capNetAdmin();
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    log(`[wg] 运行身份：uid=${uid === null ? "?" : uid}${uid === 0 ? "（root）" : "（非 root，能力会被清空）"}`);
     log("[wg] 排查清单：");
-    if (cap === false) {
+    if (uid !== 0 && uid !== null) {
+      log("[wg]   ✗ 进程不是 root：即使容器给了 privileged / NET_ADMIN，非 root 也建不了接口");
+      log("[wg]     这不是 compose 的问题，是入口脚本降权了 —— 确认 AWA_WG_ENABLE 没有设成 0");
+    } else if (cap === false) {
       log("[wg]   ✗ 容器实际没有 NET_ADMIN —— compose 的 cap_add 没生效");
       log("[wg]     改完 compose 必须重建容器：docker compose up -d --force-recreate（restart 不会应用新权限）");
       log("[wg]     仍然不行就临时加 privileged: true 验证，通了再回来收敛");

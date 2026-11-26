@@ -271,6 +271,12 @@ export async function wgCheck() {
     }
   }
 
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (!isManaged() && uid !== null && uid !== 0) {
+    issues.push(`进程运行在非 root（uid=${uid}），无法获得 NET_ADMIN`);
+    hints.push("容器入口默认以 root 跑；如果 compose 里写了 AWA_WG_ENABLE=0 就会降权到 node，删掉它");
+  }
+
   if (!isManaged()) {
     issues.push("部署端没有托管 awa0 接口（缺 NET_ADMIN 或内核无 wireguard 模块），当前只能生成配置，不能自动中转");
     hints.push("compose 补 cap_add: [NET_ADMIN, SYS_MODULE] → docker compose up -d --force-recreate（restart 不生效）");
@@ -280,6 +286,7 @@ export async function wgCheck() {
   return {
     mode,
     managed: isManaged(),
+    uid,
     listenPort,
     iface: wg.iface,
     publicIp,
