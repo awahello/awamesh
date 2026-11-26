@@ -84,6 +84,8 @@ try { db.exec("ALTER TABLE relays ADD COLUMN kind TEXT DEFAULT 'derp'"); } catch
 try { db.exec("ALTER TABLE devices ADD COLUMN endpoint TEXT"); } catch {}
 try { db.exec("ALTER TABLE devices ADD COLUMN wg_port INTEGER"); } catch {}
 try { db.exec("ALTER TABLE devices ADD COLUMN node_token TEXT"); } catch {}
+// 节点自己上报的公网地址（决定 P2P 可行性），与内核学到的实际映射分开存
+try { db.exec("ALTER TABLE devices ADD COLUMN reported_endpoint TEXT"); } catch {}
 
 // 迁移：给演示数据打标记，切到真实后端时自动清掉
 for (const t of ["devices", "relays", "tunnels"]) {

@@ -274,7 +274,7 @@ function rowDevice(x) {
     ? `<span class="dim">已吊销</span>`
     : x.path === "relay"
       ? `中继 · ${esc(x.relay || "")} ${x.latency_ms ? x.latency_ms + " ms" : ""}`
-      : x.path === "direct" ? `直连 · ${x.latency_ms ?? "—"} ms` : `<span class="dim">—</span>`;
+      : x.path === "direct" ? `直连${x.latency_ms ? " · " + x.latency_ms + " ms" : ""}` : `<span class="dim">—</span>`;
   return `<div class="row ${x.path === "relay" ? "warn" : ""}">
     <div class="cell" style="display:flex;align-items:center;gap:8px">
       <span class="dot ${x.revoked_at ? "bad" : x.online ? "ok" : "off"}"></span>
@@ -283,7 +283,7 @@ function rowDevice(x) {
     <div class="cell mono muted">${esc(x.mesh_ip || "—")}</div>
     <div class="cell">${roles || `<span class="tag">节点</span>`}</div>
     <div class="cell" style="font-size:12px">${path}</div>
-    <div class="cell mono dim" style="font-size:11px" title="${esc(x.endpoint || "")}">${x.endpoint ? esc(x.endpoint) : `<span class="tag">经控制台</span>`}</div>
+    <div class="cell mono dim" style="font-size:11px" title="${esc(x.reported_endpoint || x.endpoint || "无公网地址")}">${x.reported_endpoint ? esc(x.reported_endpoint) : `<span class="tag">经控制台</span>`}</div>
     <div class="cell dim" style="font-size:12px">${x.online ? fmtTime(x.last_seen) : x.last_seen ? fmtTime(x.last_seen) : "—"}</div>
     <div style="display:flex;gap:6px;justify-content:flex-end">
       <button class="btn sm primary" data-dev="${esc(x.id)}" data-op="deploy">一键部署</button>

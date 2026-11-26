@@ -69,15 +69,25 @@ else
 fi
 
 say "4/5 上报公网地址（决定能否和其他节点直连）"
-PUBIP="$(curl -fsS --max-time 6 https://api.ipify.org 2>/dev/null || curl -fsS --max-time 6 https://ifconfig.me 2>/dev/null || true)"
 WGPORT="$(wg show "$IFACE" listen-port 2>/dev/null || echo 51820)"
-if [ -n "${PUBIP:-}" ]; then
+PUBIP="$(curl -fsS --max-time 6 https://api.ipify.org 2>/dev/null || curl -fsS --max-time 6 https://ifconfig.me 2>/dev/null || true)"
+V6="$(ip -6 addr show scope global 2>/dev/null | sed -n 's/.*inet6 \([^/]*\)\/.*/\1/p' | grep -vi '^fe80' | head -1)"
+
+# 公网 IPv4 优先（别的节点基本都有 v4）；是运营商 CGNAT（100.64/10）就退回 IPv6
+ENDPOINT=""
+if [ -n "${PUBIP:-}" ] && ! echo "$PUBIP" | grep -qE '^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.'; then
+  ENDPOINT="$PUBIP:$WGPORT"
+elif [ -n "${V6:-}" ]; then
+  ENDPOINT="[$V6]:$WGPORT"
+fi
+
+if [ -n "$ENDPOINT" ]; then
   curl -fsS -X POST "$SERVER/api/join/hit" \
     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-    -d "{\"endpoint\":\"$PUBIP:$WGPORT\",\"port\":$WGPORT}" >/dev/null 2>&1 || true
-  say "    公网地址 $PUBIP:$WGPORT"
+    -d "{\"endpoint\":\"$ENDPOINT\",\"port\":$WGPORT}" >/dev/null 2>&1 || true
+  say "    对端地址 $ENDPOINT（别的节点可尝试直连）"
 else
-  say "    没探测到公网地址，走控制台兜底"
+  say "    没有公网 IPv4/IPv6（或走了 CGNAT），P2P 直连不了，流量经控制台转发"
 fi
 
 say "5/5 安装对端自动同步（每 60 秒）"

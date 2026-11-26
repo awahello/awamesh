@@ -94,7 +94,8 @@ export async function joinPeer(body) {
   const wgPort = Number(body?.port || 0) || null;
   const nodeToken = "nt_" + crypto.randomBytes(16).toString("hex");
   if (selfEndpoint) {
-    db.prepare("UPDATE devices SET endpoint = ?, wg_port = ? WHERE id = ?").run(selfEndpoint, wgPort, id);
+    db.prepare("UPDATE devices SET endpoint = ?, reported_endpoint = ?, wg_port = ? WHERE id = ?")
+      .run(selfEndpoint, selfEndpoint, wgPort, id);
   }
   db.prepare("UPDATE devices SET node_token = ? WHERE id = ?")
     .run(crypto.createHash("SHA256").update(nodeToken).digest("hex"), id);
@@ -167,7 +168,8 @@ export async function updateNodeEndpoint(nodeToken, endpoint, port) {
   if (!self) throw Object.assign(new Error("节点凭据无效"), { status: 401 });
   const ep = String(endpoint || "").trim().slice(0, 120);
   if (!ep) return { ok: true, changed: false };
-  db.prepare("UPDATE devices SET endpoint = ?, wg_port = ? WHERE id = ?").run(ep, Number(port) || null, self.id);
+  db.prepare("UPDATE devices SET endpoint = ?, reported_endpoint = ?, wg_port = ? WHERE id = ?")
+    .run(ep, ep, Number(port) || null, self.id);
   if (isManaged()) {
     const peer = db.prepare("SELECT public_key FROM wg_peers WHERE device_id = ?").get(self.id);
     if (peer?.public_key) await wg.setEndpoint(peer.public_key, ep.includes(":") ? ep : `${ep}:${Number(port) || 51820}`);

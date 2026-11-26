@@ -50,7 +50,9 @@ export const wgBackend = {
       tags: d.tags ? d.tags.split(",").filter(Boolean) : [],
       roles: (d.roles || "node").split(","),
       online: !!d.last_seen && now() - d.last_seen < 180 && !d.revoked_at,
-      path: d.last_seen && now() - d.last_seen < 180 ? "direct" : "",
+      // 有自己上报的公网地址 → 有直连条件；否则只能经控制台转发
+      path: d.last_seen && now() - d.last_seen < 180 ? (d.reported_endpoint ? "direct" : "relay") : "",
+      relay: d.last_seen && now() - d.last_seen < 180 && !d.reported_endpoint ? "本机 · 控制台" : null,
     }));
   },
 

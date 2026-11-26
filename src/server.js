@@ -103,12 +103,17 @@ umask 077
 [ -f /etc/wireguard/$IFACE.key ] || wg genkey > /etc/wireguard/$IFACE.key
 PUB="$(wg pubkey < /etc/wireguard/$IFACE.key)"
 
-echo "==> 2.5/4 探测公网地址（有公网 IP 才能和别的节点直连）"
-PUBIP="$(curl -fsS --max-time 6 https://api.ipify.org 2>/dev/null || curl -fsS --max-time 6 https://ifconfig.me 2>/dev/null || true)"
+echo "==> 2.5/4 探测公网地址（决定能不能和别的节点直连）"
 WGPORT="$(wg show "$IFACE" listen-port 2>/dev/null || echo 51820)"
+PUBIP="$(curl -fsS --max-time 6 https://api.ipify.org 2>/dev/null || curl -fsS --max-time 6 https://ifconfig.me 2>/dev/null || true)"
+V6="$(ip -6 addr show scope global 2>/dev/null | sed -n 's/.*inet6 \\([^/]*\\)\\/.*/\\1/p' | grep -vi '^fe80' | head -1)"
 ENDPOINT=""
-[ -n "$PUBIP" ] && ENDPOINT="$PUBIP:$WGPORT"
-if [ -n "$ENDPOINT" ]; then echo "    公网地址 $ENDPOINT（可直连）"; else echo "    未探测到公网地址，走控制台兜底"; fi
+if [ -n "$PUBIP" ] && ! echo "$PUBIP" | grep -qE '^100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.'; then
+  ENDPOINT="$PUBIP:$WGPORT"
+elif [ -n "$V6" ]; then
+  ENDPOINT="[$V6]:$WGPORT"
+fi
+if [ -n "$ENDPOINT" ]; then echo "    对端地址 $ENDPOINT"; else echo "    没有公网 v4/v6（或 CGNAT），流量经控制台转发"; fi
 
 echo "==> 3/4 向控制台申请地址"
 RESP="$(curl -fsS -X POST "$SERVER/api/join?format=shell" \
@@ -440,21 +445,36 @@ async function syncWgStatus() {
   try {
     const peers = await wg.dump();
     const byKey = new Map(db.prepare("SELECT device_id, public_key FROM wg_peers").all().map(r => [r.public_key, r.device_id]));
-    const cur = new Map(db.prepare("SELECT id, last_seen, path FROM devices").all().map(r => [r.id, r]));
+    const cur = new Map(db.prepare("SELECT id, last_seen, path, endpoint, reported_endpoint FROM devices").all().map(r => [r.id, r]));
     const t = Math.floor(Date.now() / 1000);
     const upd = db.prepare("UPDATE devices SET last_seen = ?, path = ? WHERE id = ?");
-    let changed = 0;
+    const updEp = db.prepare("UPDATE devices SET endpoint = ?, wg_port = ? WHERE id = ?");
+    let changed = 0, learned = 0;
     for (const p of peers) {
       const id = byKey.get(p.publicKey);
       if (!id) continue;
+
+      // 从内核看到的真实 source address 学习对端公网 endpoint。
+      // 这比节点自己猜（公网IP + 本地监听端口）准得多：NAT 常常改写源端口。
+      if (isPublicEndpoint(p.endpoint)) {
+        const oldEp = cur.get(id)?.endpoint || "";
+        if (oldEp !== p.endpoint) {
+          const m = p.endpoint.match(/:([0-9]{1,5})$/);
+          updEp.run(p.endpoint, m ? Number(m[1]) : null, id);
+          if (cur.get(id)) cur.get(id).endpoint = p.endpoint;
+          learned++;
+        }
+      }
+
       const seen = p.handshake || null;
-      const path = seen && t - seen < 180 ? "direct" : "";
+      const alive = !!seen && t - seen < 180;
+      const path = alive ? ((cur.get(id)?.reported_endpoint) ? "direct" : "relay") : "";
       const old = cur.get(id);
       if (old && old.last_seen === seen && old.path === path) continue; // 没变就不写库
       upd.run(seen, path, id);
       changed++;
     }
-    if (changed) log(`[wg] 状态更新 ${changed} 台`);
+    if (changed || learned) log(`[wg] 状态更新 ${changed} 台${learned ? `，学到 ${learned} 个公网地址` : ""}`);
   } catch (e) {
     log("[wg] 状态同步失败：" + e.message);
   }
@@ -488,6 +508,18 @@ function capNetAdmin() {
   } catch {
     return null;
   }
+}
+
+
+/** 是否是可用于 P2P 的公网 endpoint（排除内网/回环） */
+function isPublicEndpoint(ep) {
+  if (!ep) return false;
+  const h = ep.replace(/^\[/, "").replace(/\]:\d+$/, "").replace(/:\d+$/, "");
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) {
+    return !/^(10\.|127\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h);
+  }
+  if (h.includes(":")) return !/^(::1|fe80|fc|fd)/i.test(h);
+  return false;
 }
 
 /** 中继健康检查：TCP 连得上才算在线；状态变化写事件 */
