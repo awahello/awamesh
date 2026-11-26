@@ -416,7 +416,7 @@ async function viewTunnels(main) {
     </div>
     ${d.cfEnabled ? "" : `<div class="card" style="margin-bottom:12px;border-color:var(--info)">
       <b>还没连接 Cloudflare</b>
-      <span class="muted"> · 去「设置」填一个只读 API Token，就能把真实的隧道与 ingress 拉到这里；现在只能手工登记域名。</span>
+      <span class="muted"> · 去「设置 → Cloudflare」填 Token（和 Account ID），点「保存」再「测试连接」，然后回这一页点右上「刷新」。</span>
       <div style="margin-top:8px"><button class="btn" data-act="goSettings">去设置填写</button></div>
     </div>`}
     <div class="card">
@@ -636,7 +636,8 @@ async function viewSettings(main) {
             "打开 <a href=\"https://dash.cloudflare.com/profile/api-tokens\" target=\"_blank\" rel=\"noopener noreferrer\">My Profile → API Tokens</a> → <b>Create Token</b> → 最下面 <b>Create Custom Token</b>",
             "Permissions 加两条：<code>Account</code> → <code>Cloudflare Tunnel</code> → <code>Read</code>；<code>Zone</code> → <code>DNS</code> → <code>Read</code>（想用「改指 mesh」再加 <code>Edit</code>）",
             "Account Resources 选你的账户，Zone Resources 选 <b>All zones</b>（或只选要发布的那几个域名）→ Continue → Create Token",
-            "复制那串 Token（<b>只显示一次</b>）粘到下面 → 点「测试连接」，成功后 Account ID 会自动填上",
+            "复制那串 Token（<b>只显示一次</b>）粘到下面 → 点「保存」→ 再点「测试连接」",
+            "如果 Token 只给了 <code>Cloudflare Tunnel</code> 权限（没给 <code>Account Settings: Read</code>），列不出账户属于正常：把 Cloudflare 首页右栏的 <b>Account ID</b>（32 位）填进下面的输入框再测即可",
           ],
           notes: [
             "Account ID 在 <a href=\"https://dash.cloudflare.com\" target=\"_blank\" rel=\"noopener noreferrer\">控制台首页</a> 右侧栏，或地址栏 <code>/accounts/</code> 后面那 32 位十六进制；留空也行。",
@@ -680,7 +681,7 @@ async function viewSettings(main) {
           href: "https://login.tailscale.com/admin/settings/keys",
           hrefText: "直接打开 Tailscale → Keys",
         })}
-        <label class="dim" style="font-size:11px">authkey（tskey-auth-…）</label>
+        <label class="dim" style="font-size:11px">authkey（tskey-auth-…，粘进来后必须点下面的「保存」才生效）</label>
         <input id="tsKey" class="secret-input" placeholder="留空表示不修改" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 8px">
         <label class="dim" style="font-size:11px">Login Server（自建 Headscale 才填，官方留空）</label>
         <input id="tsLogin" value="${esc(ts.loginServer || "")}" placeholder="https://headscale.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
@@ -914,6 +915,11 @@ async function viewSettings(main) {
   };
   main.querySelector("#testCf").onclick = async () => {
     try {
+      // 先把当前输入落库，再测 —— 否则「填了 Account ID 没点保存」会测到旧状态
+      const payload = { account: main.querySelector("#cfAcct").value.trim() };
+      const t = main.querySelector("#cfToken").value.trim();
+      if (t) payload.token = t;
+      await api("/api/cf/profile", { method: "POST", body: JSON.stringify(payload) });
       const r = await api("/api/cf/test", { method: "POST", body: "{}" });
       toast(`连接正常 · 账户 ${String(r.account).slice(0, 8)}… · 可读 ${r.tunnelCount} 条隧道`);
       renderView();
