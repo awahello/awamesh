@@ -472,9 +472,21 @@ async function wgBoot() {
   try {
     const subnet = setting("wg_subnet") || cfg.meshCidr;
     const serverIp = hostInCidr(subnet, 1);
-    const port = Number(process.env.AWA_WG_PORT || 51820);
-    await wg.ensure(serverIp, Number(setting("wg_mtu") || cfg.mtu), port);
-    log(`[wg] 已接管接口 ${wg.iface}：${serverIp}/${subnet.split("/")[1] || 24} · udp ${port}`);
+    // 端口避让：AWA_WG_PORT 是显式指定，尊重；否则从 wg_port/51820 起找空闲的
+    let port = Number(process.env.AWA_WG_PORT || setting("wg_port") || 51820);
+    if (!process.env.AWA_WG_PORT) {
+      const free = await wg.pickPort(port);
+      if (free !== port) {
+        log(`[wg] UDP ${port} 已被占用，改用 ${free}（不会顶掉已有服务）`);
+        port = free;
+        setting("wg_port", port);
+      } else {
+        setting("wg_port", port);
+      }
+    }
+    const bits = Number((setting("wg_subnet") || cfg.meshCidr).split("/")[1]) || 24;
+    await wg.ensure(serverIp, Number(setting("wg_mtu") || cfg.mtu), port, bits);
+    log(`[wg] 已接管接口 ${wg.iface}：${serverIp}/${bits} · udp ${port}`);
     _wgOn = true;
     setManaged(true);
 

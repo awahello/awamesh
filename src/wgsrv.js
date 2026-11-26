@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import dgram from "node:dgram";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
@@ -14,6 +15,29 @@ export function setManaged(v) { managed = !!v; }
 
 export const wg = {
   iface: IFACE,
+
+  /** 探测本命名空间里某 UDP 端口能不能占（不影响宿主机其它服务的判断） */
+  async udpFree(port) {
+    return new Promise((resolve) => {
+      const s = dgram.createSocket({ type: "udp4", reuseAddr: false });
+      let done = false;
+      const finish = (v) => { if (!done) { done = true; try { s.close(); } catch {} resolve(v); } };
+      s.once("error", () => finish(false));
+      s.once("listening", () => finish(true));
+      try { s.bind({ address: "0.0.0.0", port }); } catch { finish(false); }
+      setTimeout(() => finish(false), 800);
+    });
+  },
+
+  /** 从 preferred 往后找一个空闲 UDP 端口，避免顶掉已有的 WireGuard / 服务 */
+  async pickPort(preferred) {
+    const start = Number(preferred) || 51820;
+    for (let p = start; p < start + 50; p++) {
+      if (p > 65535) break;
+      if (await this.udpFree(p)) return p;
+    }
+    return start;
+  },
   /** 容器里有没有 wg 命令、能不能建接口 */
   async available() {
     try {
@@ -48,7 +72,7 @@ export const wg = {
   },
 
   /** 建接口、设地址、监听端口；已存在则只更新 */
-  async ensure(serverIp, mtu, port) {
+  async ensure(serverIp, mtu, port, subnetBits = 24) {
     const keyFile = this.writeKey();
     try {
       await this.sh("ip", ["link", "add", "dev", this.iface, "type", "wireguard"]);
@@ -57,7 +81,7 @@ export const wg = {
     }
     await this.sh("wg", ["set", this.iface, "private-key", keyFile, "listen-port", String(port)]);
     try {
-      await this.sh("ip", ["addr", "add", `${serverIp}/24`, "dev", this.iface]);
+      await this.sh("ip", ["addr", "add", `${serverIp}/${subnetBits}`, "dev", this.iface]);
     } catch (e) {
       if (!/exist/i.test(e.message)) throw e;
     }

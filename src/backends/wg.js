@@ -24,9 +24,19 @@ function profile() {
     setting("wg_server_priv", serverPriv);
     setting("wg_server_pub", serverPub);
   }
+  // builtin：部署端自己当 WireGuard 服务端（默认，零配置）
+  // custom ：客户端配置指向你自己的服务端（OpenWrt / 任意 VPS）
+  const mode = setting("wg_mode") === "custom" ? "custom" : "builtin";
+  const builtinEp = setting("wg_endpoint") || "";
+  const extEp = setting("wg_external_endpoint") || "";
+  const extPub = setting("wg_external_pub") || "";
+
   return {
-    endpoint: setting("wg_endpoint") || "",
-    serverPub,
+    mode,
+    endpoint: mode === "custom" ? extEp : builtinEp,
+    serverPub: mode === "custom" ? extPub : serverPub,
+    builtin: { endpoint: builtinEp, serverPub },
+    custom: { endpoint: extEp, serverPub: extPub },
     serverPriv,
     subnet: setting("wg_subnet") || cfg.meshCidr,
     mtu: Number(setting("wg_mtu") || cfg.mtu),

@@ -71,6 +71,15 @@ try {
 
   r = await call(`/api/join/peers`, { headers: { Authorization: `Bearer ${token2}`, "Content-Type": "text/plain" } });
   check("部署凭据同时能拉对端表", r.status === 200 && Array.isArray(r.body.peers), r.text.slice(0, 80));
+  r = await call("/api/wg/check");
+  check("连通性自检可用", r.status === 200 && typeof r.body.managed === "boolean" && Array.isArray(r.body.hints), r.text.slice(0, 120));
+
+  r = await call("/api/wg/profile", { method: "POST", body: JSON.stringify({ mode: "custom" }) });
+  check("自定义模式缺 Endpoint 被拒", r.status >= 400, r.status + " " + r.text.slice(0, 80));
+
+  r = await call("/api/wg/profile", { method: "POST", body: JSON.stringify({ mode: "builtin", endpoint: "" }) });
+  check("自动模式保存并自动推导 Endpoint", r.status === 200 && r.body.mode === "builtin" && !!r.body.endpoint, r.text.slice(0, 140));
+
 } finally {
   child.kill();
   await sleep(200);

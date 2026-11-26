@@ -502,6 +502,18 @@ function guideCard(s, wg, cf) {
     </div>
   </div>`;
 }
+
+/** 可折叠的获取指引：标题 + 步骤 + 直链 */
+function guideBox({ title, steps, notes = [], href, hrefText }) {
+  return `
+    <details class="guide">
+      <summary>${esc(title)}</summary>
+      <ol>${steps.map(x => `<li>${x}</li>`).join("")}</ol>
+      ${notes.map(x => `<p class="g-note">${x}</p>`).join("")}
+      ${href ? `<p class="g-note"><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(hrefText || href)} ↗</a></p>` : ""}
+    </details>`;
+}
+
 /* ---------------- 设置 ---------------- */
 async function viewSettings(main) {
   const s = await api("/api/settings");
@@ -550,13 +562,29 @@ async function viewSettings(main) {
       </div>
       <div class="card">
         <div class="card-h"><b>Cloudflare</b><span>${cf.tokenSet ? "已配置 " + esc(cf.tokenHint) : "未配置"}</span></div>
-        <label class="dim" style="font-size:11px">API Token（需要 Account:Tunnel:Read + Zone.DNS:Read；加密存储在本地库）</label>
+        ${guideBox({
+          title: "怎么拿到 API Token 和 Account ID？（4 步）",
+          steps: [
+            "打开 <a href=\"https://dash.cloudflare.com/profile/api-tokens\" target=\"_blank\" rel=\"noopener noreferrer\">My Profile → API Tokens</a> → <b>Create Token</b> → 最下面 <b>Create Custom Token</b>",
+            "Permissions 加两条：<code>Account</code> → <code>Cloudflare Tunnel</code> → <code>Read</code>；<code>Zone</code> → <code>DNS</code> → <code>Read</code>（想用「改指 mesh」再加 <code>Edit</code>）",
+            "Account Resources 选你的账户，Zone Resources 选 <b>All zones</b>（或只选要发布的那几个域名）→ Continue → Create Token",
+            "复制那串 Token（<b>只显示一次</b>）粘到下面 → 点「测试连接」，成功后 Account ID 会自动填上",
+          ],
+          notes: [
+            "Account ID 在 <a href=\"https://dash.cloudflare.com\" target=\"_blank\" rel=\"noopener noreferrer\">控制台首页</a> 右侧栏，或地址栏 <code>/accounts/</code> 后面那 32 位十六进制；留空也行。",
+            "只读权限就够拉隧道与 ingress；真正改 DNS/ingress 才需要 Edit。",
+          ],
+          href: "https://dash.cloudflare.com/profile/api-tokens",
+          hrefText: "直接打开 API Tokens 页面",
+        })}
+        <label class="dim" style="font-size:11px">API Token（Account:Tunnel:Read + Zone.DNS:Read；AES-GCM 加密存本地库）</label>
         <input id="cfToken" placeholder="粘贴 Token，留空表示不修改" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
         <label class="dim" style="font-size:11px">Account ID（可留空，测试连接后自动填）</label>
         <input id="cfAcct" value="${esc(cf.account)}" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn primary" id="saveCf">保存</button>
           <button class="btn" id="testCf">测试连接</button>
+          <a class="btn" href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer">去获取 Token</a>
           <button class="btn danger" id="clearCf">清除 Token</button>
         </div>
         <p class="dim" style="font-size:11px;margin:10px 0 0">权限只读即可；要用「改指 mesh」才需要 Edit，v0.2 再开。</p>
@@ -569,20 +597,58 @@ async function viewSettings(main) {
           WireGuard 走 UDP，UDP 被封（公司/酒店/校园网）时连不上。填一个 Tailscale authkey，
           节点部署时脚本会先试 WireGuard，20 秒握不上手就自动改走 443 的 DERP 兜底。
         </p>
-        <label class="dim" style="font-size:11px">authkey（tskey-auth-…，在 Tailscale → Settings → Keys 生成，勾 reusable）</label>
+        ${guideBox({
+          title: "怎么拿到 authkey？（官方 3 步 / 自建 1 条命令）",
+          steps: [
+            "官方：打开 Tailscale 控制台 → <b>Settings → Keys</b> → <b>Generate auth key…</b>",
+            "弹窗里勾上 <b>Reusable</b>（多台节点共用一个）；<b>Ephemeral</b> 可选（节点离线后自动清理）；Expiration 建议 90 天",
+            "点 Generate → 复制那串 <code>tskey-auth-…</code> → 粘到下面 → 保存",
+            "自建 Headscale：在服务端执行 <code>headscale preauthkeys create --user 1 --reusable --expiration 90d</code>，把输出的 key 填进来，下面的 Login Server 填 <code>https://你的headscale域名</code>",
+          ],
+          notes: [
+            "官方 Tailscale 的 Login Server <b>留空</b>；只有自建 Headscale 才需要填。",
+            "不想配就留空 —— 不影响 WireGuard 主链路，只是少了「UDP 被封」时的兜底。",
+          ],
+          href: "https://login.tailscale.com/admin/settings/keys",
+          hrefText: "直接打开 Tailscale → Keys",
+        })}
+        <label class="dim" style="font-size:11px">authkey（tskey-auth-…）</label>
         <input id="tsKey" class="secret-input" placeholder="留空表示不修改" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 8px">
         <label class="dim" style="font-size:11px">Login Server（自建 Headscale 才填，官方留空）</label>
         <input id="tsLogin" value="${esc(ts.loginServer || "")}" placeholder="https://headscale.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
         <div style="display:flex;gap:8px">
           <button class="btn primary" id="saveTs">保存</button>
+          <a class="btn" href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noopener noreferrer">去获取 authkey</a>
           <button class="btn danger" id="clearTs">关闭兜底</button>
         </div>
       </div>
       <div class="card">
-        <div class="card-h"><b>WireGuard 服务端</b><span>这些值只写进生成的客户端配置</span></div>
+        <div class="card-h"><b>WireGuard 服务端</b><span id="wgModeLabel" data-mode="${esc(wg.mode)}">${wg.mode === "custom" ? "自定义 · 外部服务端 / 端口映射" : "自动 · 部署端当服务端"}</span></div>
+
+        <div class="mode-row">
+          <button class="btn ${wg.mode === "custom" ? "" : "primary"}" data-mode="builtin">自动 · 部署端当服务端</button>
+          <button class="btn ${wg.mode === "custom" ? "primary" : ""}" data-mode="custom">自定义 · 中继 / OpenWrt / 端口映射</button>
+          <button class="btn" id="wgCheck">检测连通性</button>
+        </div>
+        <div id="wgCheckOut"></div>
+
+        ${guideBox({
+          title: "三种情况怎么选？（有公网 / 没公网 / 需要手动映射）",
+          steps: [
+            "<b>部署端有公网 IP</b>：选「自动」。控制台会自己起 <code>awa0</code> 并推导 Endpoint，节点一条命令直接接进来，不需要任何额外配置",
+            "<b>部署端没公网</b>：仍选「自动」也行 —— 节点会主动出站连上控制台，跨节点流量经控制台转发（内置中转）；UDP 走不通时靠「兜底通道」的 Tailscale",
+            "<b>有公网但要做端口映射</b>（NAS 在后面、外部端口不是 51820）：选「自定义」，Endpoint 填 <code>公网IP:映射后的端口</code>，公钥留空即用控制台自己的",
+            "<b>想用自己的 OpenWrt 当服务端</b>：选「自定义」，Endpoint 填 OpenWrt 的公网地址，公钥填它 <code>wg show</code> 里的 public key；之后每台节点的 [Peer] 要加到 OpenWrt 上",
+          ],
+          notes: [
+            "端口都是可避让的：51820/udp 被占用时控制台会自动换一个空闲端口（启动日志会写），不会顶掉你已有的服务。",
+            "P2P 优先：两台都有公网地址时节点之间直连、不经过控制台；打不通才回落到中转。",
+          ],
+        })}
+
         <label class="dim" style="font-size:11px">Endpoint（公网地址:端口）</label>
-        <input id="wgEp" value="${esc(wg.endpoint)}" placeholder="1.2.3.4:51820 或 host.example.com:51820" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
-        <label class="dim" style="font-size:11px">服务端公钥（用你 OpenWrt 上 wg 的真实公钥，或直接用下面生成的）</label>
+        <input id="wgEp" value="${esc(wg.endpoint)}" placeholder="1.2.3.4:51820 或 你的域名:51820" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+        <label class="dim" style="font-size:11px" id="wgPubLabel">服务端公钥</label>
         <input id="wgPub" value="${esc(wg.serverPub)}" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);font-family:var(--mono);font-size:12px;margin:4px 0 10px">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <div>
@@ -598,25 +664,74 @@ async function viewSettings(main) {
         <input id="wgDns" value="${esc(wg.dns)}" placeholder="10.88.0.1 或 1.1.1.1" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
         <label class="dim" style="font-size:11px">额外下发路由（家里 LAN，逗号分隔，可空）</label>
         <input id="wgLan" value="${esc(wg.lanRoutes)}" placeholder="192.168.1.0/24" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn primary" id="saveWg">保存</button>
           <button class="btn" id="regenWg">重新生成服务端密钥</button>
         </div>
       </div>` : ""}
     </div>`;
   if (wg) {
+    const st = { mode: wg.mode === "custom" ? "custom" : "builtin", builtin: wg.builtin || {}, custom: wg.custom || {} };
+    const epEl = main.querySelector("#wgEp");
+    const pubEl = main.querySelector("#wgPub");
+
+    const applyMode = () => {
+      const isCustom = st.mode === "custom";
+      main.querySelector("#wgModeLabel").textContent = isCustom ? "自定义 · 外部服务端 / 端口映射" : "自动 · 部署端当服务端";
+      main.querySelectorAll(".mode-row [data-mode]").forEach(b => {
+        b.classList.toggle("primary", (b.dataset.mode === "custom") === isCustom);
+      });
+      epEl.value = isCustom ? (st.custom.endpoint || "") : (st.builtin.endpoint || "");
+      epEl.placeholder = isCustom ? "OpenWrt 公网地址:端口 或 公网IP:映射端口" : "留空则自动用当前访问地址:51820";
+      pubEl.value = isCustom ? (st.custom.serverPub || "") : (st.builtin.serverPub || "");
+      pubEl.readOnly = !isCustom;
+      pubEl.style.opacity = isCustom ? "1" : ".75";
+      main.querySelector("#wgPubLabel").textContent = isCustom
+        ? "服务端公钥（那台机器 wg show 的 public key；留空则用控制台生成的那把）"
+        : "服务端公钥（控制台生成，自动）";
+      main.querySelector("#regenWg").style.display = isCustom ? "none" : "";
+    };
+    applyMode();
+
+    main.querySelectorAll(".mode-row [data-mode]").forEach(b => {
+      b.onclick = () => { st.mode = b.dataset.mode; applyMode(); };
+    });
+
     const payload = () => ({
-      endpoint: main.querySelector("#wgEp").value,
-      serverPub: main.querySelector("#wgPub").value,
+      mode: st.mode,
+      endpoint: epEl.value,
+      serverPub: st.mode === "custom" ? pubEl.value : undefined,
       subnet: main.querySelector("#wgSubnet").value,
       mtu: main.querySelector("#wgMtu").value,
       dns: main.querySelector("#wgDns").value,
       lanRoutes: main.querySelector("#wgLan").value,
     });
+
     main.querySelector("#saveWg").onclick = async () => {
       try { await api("/api/wg/profile", { method: "POST", body: JSON.stringify(payload()) }); toast("已保存"); renderView(); }
       catch (e) { toast(e.message, true); }
     };
+
+    main.querySelector("#wgCheck").onclick = async () => {
+      const out = main.querySelector("#wgCheckOut");
+      out.innerHTML = '<div class="dim" style="font-size:11px;margin-bottom:8px">检测中…</div>';
+      try {
+        const r = await api("/api/wg/check");
+        out.innerHTML = `
+          <div class="card" style="margin:0 0 12px;border-color:${r.ok ? "var(--line)" : "var(--warn)"}">
+            <div style="font-size:12px;display:grid;gap:4px">
+              <div>部署端公网地址：<span class="mono">${esc(r.publicIp || "探测不到（可能没有外网）")}</span></div>
+              <div>当前 Endpoint：<span class="mono">${esc(r.endpoint || "未填")}</span> ${r.endpointIsSelf ? '<span class="tag info">指向本机</span>' : ""}</div>
+              <div>接口托管：${r.managed ? `<span class="dot ok"></span> 已接管 ${esc(r.iface)}` : `<span class="dot warn"></span> 未托管`}</div>
+            </div>
+            ${r.issues.length ? `<div style="margin-top:8px">${r.issues.map(x => `<div style="font-size:11.5px;color:var(--bad)">· ${esc(x)}</div>`).join("")}</div>` : ""}
+            ${r.hints.length ? `<div style="margin-top:8px">${r.hints.map(x => `<div style="font-size:11.5px;color:var(--muted)">· ${esc(x)}</div>`).join("")}</div>` : ""}
+          </div>`;
+      } catch (e) {
+        out.innerHTML = `<div class="dim" style="font-size:11px">检测失败：${esc(e.message)}</div>`;
+      }
+    };
+
     main.querySelector("#regenWg").onclick = async () => {
       if (!confirm("重新生成会换掉服务端密钥，已下发的客户端配置全部失效，确定？")) return;
       try { await api("/api/wg/profile", { method: "POST", body: JSON.stringify({ regen: true }) }); toast("已重新生成"); renderView(); }

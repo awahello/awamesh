@@ -220,6 +220,65 @@ export function deployTailscale(token) {
   return { authkey: p.authkey, loginServer: p.loginServer, hostname: dev.name };
 }
 
+
+/** WireGuard 连通性自检：判断部署端有没有公网、当前配置能不能直接跑起来 */
+export async function wgCheck() {
+  const bk = backend();
+  const pf = (typeof bk.profile === "function") ? (bk.profile() || {}) : {};
+  const endpoint = String(pf.endpoint || "").trim();
+  const mode = pf.mode || "builtin";
+
+  let publicIp = "";
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 6000);
+    const r = await fetch("https://api.ipify.org", { signal: ctl.signal });
+    clearTimeout(t);
+    if (r.ok) publicIp = (await r.text()).trim();
+  } catch { /* 没有外网就留空 */ }
+
+  const epHost = endpoint.replace(/^\[/, "").replace(/\]:\d+$/, "").replace(/:\d+$/, "");
+  const epPort = (endpoint.match(/:([0-9]{1,5})$/) || [])[1] || "";
+  const hostIsPublic = !!publicIp && (epHost === publicIp || endpoint.startsWith(`[${publicIp}]`));
+  const hostIsPrivate = /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(epHost);
+
+  const issues = [];
+  const hints = [];
+
+  if (!endpoint) {
+    issues.push("还没填 Endpoint");
+    hints.push("部署端有公网：填 <公网IP>:" + (process.env.AWA_WG_PORT || setting("wg_port") || 51820) + "，或直接点「自动」让控制台推导");
+    hints.push("部署端没公网：① 在我们这台有公网的中继机上装服务端，Endpoint 填它的地址；② 或开「兜底通道 · Tailscale」");
+  } else if (hostIsPublic) {
+    hints.push("Endpoint 就是本机公网地址，部署端可以自己当服务端 ✓");
+  } else if (hostIsPrivate) {
+    issues.push("Endpoint 是内网地址，外部节点连不上");
+    hints.push("有公网但做了端口映射：填「公网IP:映射后的端口」（不是内网地址）");
+    hints.push("家里 NAS 想直接暴露：确认路由器把 UDP " + (epPort || "51820") + " 转发到这台机器");
+  } else {
+    hints.push("Endpoint 指向另一台机器（中继机 / OpenWrt / 手动映射地址）");
+    hints.push("那台机器上必须存在对应的 WireGuard 服务端，并把每台节点的 [Peer] 加进去");
+  }
+
+  if (!isManaged()) {
+    issues.push("部署端没有托管 awa0 接口（缺 NET_ADMIN 或内核无 wireguard 模块），当前只能生成配置，不能自动中转");
+    hints.push("compose 里补 cap_add: [NET_ADMIN, SYS_MODULE] 后 docker compose up -d --force-recreate");
+  }
+
+  return {
+    mode,
+    managed: isManaged(),
+    iface: wg.iface,
+    publicIp,
+    endpoint,
+    endpointPort: epPort,
+    endpointIsSelf: hostIsPublic,
+    issues,
+    hints,
+    ok: issues.length === 0,
+  };
+}
+
 /** 有效 Endpoint：设置里的 > AWA_PUBLIC_HOST > 请求 Host 推导 */
 export function effectiveEndpoint(host) {
   const bk = backend();
@@ -228,7 +287,7 @@ export function effectiveEndpoint(host) {
   const raw = process.env.AWA_PUBLIC_HOST || String(host || "").split(":")[0] || "";
   const h = raw.trim();
   if (!h || h === "localhost") return "";
-  return `${h}:${process.env.AWA_WG_PORT || 51820}`;
+  return `${h}:${process.env.AWA_WG_PORT || setting("wg_port") || 51820}`;
 }
 
 /** 一键部署：签发长期部署凭据（可吊销），返回一条可直接执行的命令 */
@@ -434,15 +493,34 @@ export async function api(req, res, url, body) {
 
   if (url.pathname === "/api/wg/profile" && method === "POST") {
     if (typeof be.profile !== "function") throw new Error("当前后端不是 wg");
-    if (body?.endpoint !== undefined) setting("wg_endpoint", String(body.endpoint).trim());
+    const mode = body?.mode === "custom" ? "custom" : body?.mode === "builtin" ? "builtin" : (setting("wg_mode") || "builtin");
+    setting("wg_mode", mode);
+
+    if (body?.endpoint !== undefined) {
+      const ep = String(body.endpoint).trim();
+      setting(mode === "custom" ? "wg_external_endpoint" : "wg_endpoint", ep);
+    }
     if (body?.subnet) setting("wg_subnet", String(body.subnet).trim());
     if (body?.mtu) setting("wg_mtu", String(body.mtu));
     if (body?.dns !== undefined) setting("wg_dns", String(body.dns).trim());
     if (body?.lanRoutes !== undefined) setting("wg_lan_routes", String(body.lanRoutes).trim());
-    if (body?.serverPub) {
+    if (mode === "custom" && body?.serverPub !== undefined) {
       const pub = String(body.serverPub).trim();
       if (!/^[A-Za-z0-9+/]{43}=?$/.test(pub)) throw new Error("服务端公钥格式不对（应为 44 字符 base64）");
-      setting("wg_server_pub", pub.endsWith("=") ? pub : pub + "=");
+      setting("wg_external_pub", pub.endsWith("=") ? pub : pub + "=");
+    }
+    // 默认模式：Endpoint 没填就用当前访问地址推导，做到「开箱即用」
+    if (mode === "builtin" && !setting("wg_endpoint")) {
+      const hostOnly = String(req.headers?.host || "").split(":")[0];
+      if (hostOnly && hostOnly !== "localhost") {
+        setting("wg_endpoint", `${hostOnly}:${process.env.AWA_WG_PORT || setting("wg_port") || 51820}`);
+      }
+    }
+    // 自定义模式必须两样都齐，否则生成的客户端配置连不上
+    if (mode === "custom") {
+      const ep = setting("wg_external_endpoint") || "";
+      const pub = setting("wg_external_pub") || "";
+      if (!ep || !pub) throw new Error("自定义服务端需要同时填「Endpoint」和「服务端公钥」（OpenWrt 上 wg show 的 public key）");
     }
     if (body?.regen) {
       const { genKeypair } = await import("./wg.js");
@@ -458,6 +536,10 @@ export async function api(req, res, url, body) {
     }
     const { serverPriv, ...rest } = be.profile();
     return { ...rest, managed: isManaged() };
+  }
+
+  if (url.pathname === "/api/wg/check" && method === "GET") {
+    return wgCheck();
   }
 
   if (url.pathname === "/api/wg/sync" && method === "POST") {

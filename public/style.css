@@ -208,3 +208,38 @@ a { color: var(--info); text-decoration: none; }
   .devices .row { grid-template-columns: 1.4fr 1fr 1fr; }
   .devices .row .hide-sm { display: none; }
 }
+
+/* 「怎么获取」折叠指引 */
+.guide {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.guide > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--info);
+  user-select: none;
+}
+.guide > summary::marker { color: var(--info); }
+.guide ol { margin: 8px 0 0 18px; padding: 0; }
+.guide li { font-size: 11.5px; line-height: 1.7; margin: 2px 0; color: var(--muted); }
+.guide li b { color: var(--text); font-weight: 600; }
+.guide .g-note { font-size: 11px; color: var(--muted); margin: 6px 0 0; line-height: 1.6; }
+.guide code {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.guide a, .guide .g-note a { color: var(--info); text-decoration: none; }
+.guide a:hover { text-decoration: underline; }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
+
+/* 模式切换行 */
+.mode-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 10px; }
+.mode-row .btn { font-size: 12px; }
