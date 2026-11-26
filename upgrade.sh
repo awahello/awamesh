@@ -39,6 +39,27 @@ docker compose version >/dev/null 2>&1 || {
 
 say "目录：$DIR"
 
+# 0) 先确认 compose 能解析；常见的坑是 privileged / cap_add 被插了两次导致整份 YAML 失效
+if ! $DC config >/dev/null 2>&1; then
+  err="$($DC config 2>&1 | head -3)"
+  case "$err" in
+    *"already defined"*)
+      warn "compose 里有重复的键，自动去重（只保留第一份 privileged）"
+      cp docker-compose.yml "docker-compose.yml.broken-$(date +%H%M%S)"
+      awk '!(/^[[:space:]]*privileged:/ && seen++)' docker-compose.yml > .compose.tmp \
+        && mv .compose.tmp docker-compose.yml
+      if $DC config >/dev/null 2>&1; then
+        ok "已修复，原文件备份为 docker-compose.yml.broken-*"
+      else
+        die "去重后仍解析失败，请手动修：$($DC config 2>&1 | head -3)"
+      fi
+      ;;
+    *)
+      die "compose 解析失败：$err"
+      ;;
+  esac
+fi
+
 # 2) 备份 data/
 if [ "$NO_BACKUP" = "0" ] && [ -d ./data ]; then
   B="backup-$(date +%F-%H%M).tgz"
