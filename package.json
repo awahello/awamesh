@@ -1,6 +1,6 @@
 {
   "name": "awamesh",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "description": "自托管组网控制台：WireGuard 组网 + 多中继 + Cloudflare 隧道",
   "type": "module",
@@ -8,7 +8,10 @@
   "scripts": {
     "start": "node --no-warnings src/server.js",
     "dev": "node --no-warnings --watch src/server.js",
-    "selftest": "node --no-warnings scripts/selftest.mjs"
+    "selftest": "node --no-warnings scripts/selftest.mjs",
+    "test:deploy": "node --no-warnings scripts/deploy-test.mjs",
+    "test:security": "node --no-warnings scripts/security-test.mjs",
+    "test": "node --no-warnings scripts/selftest.mjs && node --no-warnings scripts/deploy-test.mjs && node --no-warnings scripts/security-test.mjs"
   },
   "author": "awamesh",
   "license": "MIT"

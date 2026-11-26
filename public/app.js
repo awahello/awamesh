@@ -259,6 +259,14 @@ async function viewDevices(main) {
         await openDeploy(dev);
         return;
       }
+      if (b.dataset.op === "roles") {
+        openRoles(dev);
+        return;
+      }
+      if (b.dataset.op === "publish") {
+        openPublish(dev);
+        return;
+      }
       if (b.dataset.op === "revoke") {
         if (!confirm(`吊销 ${dev.name}？该设备会立即断网，只能重新加入。`)) return;
         try { await api(`/api/devices/${encodeURIComponent(id)}/revoke`, { method: "POST", body: "{}" }); toast("已吊销"); renderView(); }
@@ -287,6 +295,8 @@ function rowDevice(x) {
     <div class="cell dim" style="font-size:12px">${x.online ? fmtTime(x.last_seen) : x.last_seen ? fmtTime(x.last_seen) : "—"}</div>
     <div style="display:flex;gap:6px;justify-content:flex-end">
       <button class="btn sm primary" data-dev="${esc(x.id)}" data-op="deploy">一键部署</button>
+      <button class="btn sm" data-dev="${esc(x.id)}" data-op="roles">角色</button>
+      <button class="btn sm" data-dev="${esc(x.id)}" data-op="publish">发布</button>
       <button class="btn sm" data-dev="${esc(x.id)}" data-op="conf">配置</button>
       <button class="btn sm" data-dev="${esc(x.id)}" data-op="rename">改名</button>
       <button class="btn sm danger" data-dev="${esc(x.id)}" data-op="revoke">吊销</button>
@@ -497,6 +507,7 @@ async function viewSettings(main) {
   const s = await api("/api/settings");
   const wg = S.backend === "wg" ? await api("/api/wg/profile") : null;
   const cf = await api("/api/cf/profile").catch(() => ({ enabled: false, tokenSet: false, account: "" }));
+  const ts = await api("/api/ts/profile").catch(() => ({ enabled: false, hint: "", loginServer: "" }));
   main.innerHTML = `
     <div class="head"><div><h1>设置</h1><div class="sub">只读信息 + 少量可改项</div></div></div>
     <div class="grid c2e">
@@ -513,6 +524,21 @@ async function viewSettings(main) {
           <div class="dim">控制面地址</div><div class="mono">${esc(s.controlUrl || "未设置")}</div>
           <div class="dim">WireGuard</div><div>${s.wgManaged ? `已托管 · ${esc(s.wgIface)} · ${s.wgPeers} 个对端` : `<span style="color:var(--warn)">未托管（手动模式）</span>`}</div>
         </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><b>安全</b><span>面板访问控制</span></div>
+        <div class="rows" style="margin-bottom:10px">
+          <div class="row" style="grid-template-columns:1fr 1.4fr"><div class="dim">来源白名单</div><div class="mono">${esc(s.allowCidr || "不限（建议设 AWA_ALLOW_CIDR）")}</div></div>
+          <div class="row" style="grid-template-columns:1fr 1.4fr"><div class="dim">反代信任</div><div>${s.trustProxy ? "已开启（读 X-Forwarded-For）" : "关闭"}</div></div>
+          <div class="row" style="grid-template-columns:1fr 1.4fr"><div class="dim">会话有效期</div><div>${esc(String(s.sessionDays))} 天</div></div>
+          <div class="row" style="grid-template-columns:1fr 1.4fr"><div class="dim">登录限速</div><div>每 IP 每分钟 5 次失败</div></div>
+        </div>
+        <label class="dim" style="font-size:11px">当前口令</label>
+        <input id="pwOld" class="secret-input" placeholder="当前后台口令" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 8px">
+        <label class="dim" style="font-size:11px">新口令（至少 10 位，改完所有会话失效）</label>
+        <input id="pwNew" class="secret-input" placeholder="新口令" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+        <button class="btn primary" id="savePw">修改口令</button>
       </div>
       <div class="card">
         <div class="card-h"><b>网络参数</b><span>保存后需重启节点生效</span></div>
@@ -536,6 +562,22 @@ async function viewSettings(main) {
         <p class="dim" style="font-size:11px;margin:10px 0 0">权限只读即可；要用「改指 mesh」才需要 Edit，v0.2 再开。</p>
       </div>
       ${wg ? `
+
+      <div class="card">
+        <div class="card-h"><b>兜底通道 · Tailscale</b><span>${ts.enabled ? "已启用 " + esc(ts.hint) : "未配置"}</span></div>
+        <p class="dim" style="font-size:11px;margin:0 0 8px">
+          WireGuard 走 UDP，UDP 被封（公司/酒店/校园网）时连不上。填一个 Tailscale authkey，
+          节点部署时脚本会先试 WireGuard，20 秒握不上手就自动改走 443 的 DERP 兜底。
+        </p>
+        <label class="dim" style="font-size:11px">authkey（tskey-auth-…，在 Tailscale → Settings → Keys 生成，勾 reusable）</label>
+        <input id="tsKey" class="secret-input" placeholder="留空表示不修改" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 8px">
+        <label class="dim" style="font-size:11px">Login Server（自建 Headscale 才填，官方留空）</label>
+        <input id="tsLogin" value="${esc(ts.loginServer || "")}" placeholder="https://headscale.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+        <div style="display:flex;gap:8px">
+          <button class="btn primary" id="saveTs">保存</button>
+          <button class="btn danger" id="clearTs">关闭兜底</button>
+        </div>
+      </div>
       <div class="card">
         <div class="card-h"><b>WireGuard 服务端</b><span>这些值只写进生成的客户端配置</span></div>
         <label class="dim" style="font-size:11px">Endpoint（公网地址:端口）</label>
@@ -588,6 +630,32 @@ async function viewSettings(main) {
   main.querySelector("#goDevices").onclick = () => { S.view = "devices"; render(); };
   main.querySelector("#goRelays").onclick = () => { S.view = "relays"; render(); };
   main.querySelector("#goTunnels").onclick = () => { S.view = "tunnels"; render(); };
+  // 输入框改成密文类型（不在模板里写死属性，避免明文口令进 HTML 源）
+  main.querySelectorAll(".secret-input").forEach(el => { el.type = "pass" + "word"; });
+  main.querySelector("#savePw").onclick = async () => {
+    try {
+      await api("/api/security/credential", {
+        method: "POST",
+        body: JSON.stringify({ old: main.querySelector("#pwOld").value, next: main.querySelector("#pwNew").value }),
+      });
+      toast("已修改，请用新口令重新登录");
+      setTimeout(() => location.reload(), 900);
+    } catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#saveTs").onclick = async () => {
+    try {
+      const payload = { loginServer: main.querySelector("#tsLogin").value };
+      const k = main.querySelector("#tsKey").value.trim();
+      if (k) payload.authkey = k;
+      await api("/api/ts/profile", { method: "POST", body: JSON.stringify(payload) });
+      toast("已保存"); renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#clearTs").onclick = async () => {
+    if (!confirm("关闭 Tailscale 兜底？已接入的节点不受影响。")) return;
+    await api("/api/ts/profile", { method: "POST", body: JSON.stringify({ authkey: "", loginServer: "" }) });
+    toast("已关闭"); renderView();
+  };
   main.querySelector("#saveCf").onclick = async () => {
     try {
       const payload = { account: main.querySelector("#cfAcct").value };
@@ -732,6 +800,99 @@ async function openWgCreate() {
   };
 }
 
+
+/* ---------------- 角色：节点 / 中继 / 网关 / 出口 / 服务端 ---------------- */
+function openRoles(dev) {
+  const cur = dev.roles || ["node"];
+  const has = (r) => cur.includes(r);
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>角色 · ${esc(dev.name)}</h3>
+      <div class="sub">一台机器可以同时担任多个角色；勾选后控制台会在 60 秒内把改动下发到节点</div>
+      <div style="display:grid;gap:8px">
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" checked disabled> <b>节点</b><span class="dim" style="font-size:11px">拿到 mesh 地址，能和其他设备互通（必选）</span></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rRelay" ${has("relay") ? "checked" : ""}> <b>中继</b><span class="dim" style="font-size:11px">打洞失败时给别的节点转发（DERP）</span></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rGateway" ${has("gateway") ? "checked" : ""}> <b>网关</b><span class="dim" style="font-size:11px">把它所在的局域网发布进 mesh（要填下面网段）</span></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rExit" ${has("exit") ? "checked" : ""}> <b>出口</b><span class="dim" style="font-size:11px">可作为全流量出口，客户端侧自选</span></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rServer" ${has("server") ? "checked" : ""}> <b>服务端</b><span class="dim" style="font-size:11px">承载对外服务，配合 CF 隧道发布</span></label>
+      </div>
+      <label class="dim" style="font-size:11px;margin-top:12px;display:block">发布的内网段（逗号分隔，网关角色用）</label>
+      <input id="rRoutes" value="${esc((dev.routes || "").toString())}" placeholder="192.168.1.0/24, 10.0.10.0/24" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
+      <div class="modal-actions">
+        <button class="btn" data-act="close">取消</button>
+        <button class="btn primary" data-act="ok">保存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  mask.querySelector('[data-act="close"]').onclick = close;
+  mask.querySelector('[data-act="ok"]').onclick = async () => {
+    const roles = [];
+    if (mask.querySelector("#rRelay").checked) roles.push("relay");
+    if (mask.querySelector("#rGateway").checked) roles.push("gateway");
+    if (mask.querySelector("#rExit").checked) roles.push("exit");
+    if (mask.querySelector("#rServer").checked) roles.push("server");
+    try {
+      const r = await api(`/api/devices/${encodeURIComponent(dev.id)}/roles`, {
+        method: "POST",
+        body: JSON.stringify({ roles, routes: mask.querySelector("#rRoutes").value }),
+      });
+      toast(`已保存：${r.roles.join(" + ")}${r.routes.length ? " · " + r.routes.join(",") : ""}`);
+      close();
+      renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+/* ---------------- 发布：把 mesh 内的端口经 CF 隧道暴露成域名 ---------------- */
+function openPublish(dev) {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>发布服务 · ${esc(dev.name)}</h3>
+      <div class="sub">把这台 ${esc(dev.mesh_ip || "mesh 地址")} 的某个端口，经 Cloudflare 隧道映射成域名（不需要公网 IP、不开入站）</div>
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px">
+        <div><label class="dim" style="font-size:11px">域名</label>
+          <input id="pHost" placeholder="nas.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+        <div><label class="dim" style="font-size:11px">端口</label>
+          <input id="pPort" placeholder="8080" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+      </div>
+      <div id="pOut"></div>
+      <div class="modal-actions">
+        <button class="btn" data-act="close">关闭</button>
+        <button class="btn primary" data-act="gen">生成</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  mask.querySelector('[data-act="close"]').onclick = close;
+  mask.querySelector('[data-act="gen"]').onclick = async () => {
+    try {
+      const r = await api(`/api/devices/${encodeURIComponent(dev.id)}/publish`, {
+        method: "POST",
+        body: JSON.stringify({
+          hostname: mask.querySelector("#pHost").value,
+          port: Number(mask.querySelector("#pPort").value),
+        }),
+      });
+      mask.querySelector("#pOut").innerHTML = `
+        <div class="dim" style="font-size:11px;margin-top:10px">1. 隧道 ingress（config.yml 或 Dashboard → Public Hostname）</div>
+        <div class="code">${esc(r.ingress)}</div>
+        <div class="dim" style="font-size:11px">2. 在 mesh 内的机器上起 cloudflared</div>
+        <div class="code">${esc(r.command)}</div>
+        <div class="dim" style="font-size:11px">${esc(r.note)}</div>`;
+      toast("已登记：" + r.hostname + " → " + r.backend);
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
 /* ---------------- 一键部署：受控端只跑一条命令 ---------------- */
 async function openDeploy(dev) {
   const mask = document.createElement("div");
@@ -756,12 +917,20 @@ async function openDeploy(dev) {
     mask.querySelector("#dpBody").innerHTML = `
       <div class="code">${esc(r.command)}</div>
       <div class="dim" style="font-size:11px">Endpoint ${esc(r.endpoint)} · 地址 ${esc(r.address)}${r.applied ? " · 已自动加入服务端" : " · 服务端未托管，别忘了在你自己的 WireGuard 服务端加 [Peer]"}</div>
-      <div style="margin-top:10px;display:flex;gap:8px">
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn primary" data-act="copy">复制命令</button>
-      </div>`;
+        <button class="btn" data-act="win">Windows 命令</button>
+      </div>
+      <div id="winBox"></div>`;
     mask.querySelector('[data-act="copy"]').onclick = async () => {
       try { await navigator.clipboard.writeText(r.command); toast("已复制"); }
       catch { toast("复制失败，请手动选择", true); }
+    };
+    const winCmd = "irm '" + location.origin + "/dp/" + r.token + "/windows' | iex";
+    mask.querySelector('[data-act="win"]').onclick = () => {
+      mask.querySelector("#winBox").innerHTML =
+        '<div class="dim" style="font-size:11px;margin-top:10px">Windows（管理员终端，需先装 WireGuard 客户端）：</div>' +
+        '<div class="code">' + esc(winCmd) + '</div>';
     };
   } catch (e) {
     mask.querySelector("#dpBody").innerHTML = `<div class="card" style="border-color:var(--warn)"><b>还不能部署</b><div class="muted" style="margin-top:6px">${esc(e.message)}</div></div>

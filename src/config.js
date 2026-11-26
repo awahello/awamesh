@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 const env = process.env;
 
 export const cfg = {
-  version: "0.2.2",
+  version: "0.3.0",
   port: Number(env.AWA_PORT || 18443),
   host: env.AWA_HOST || "0.0.0.0",
   dataDir: path.resolve(env.AWA_DATA_DIR || "./data"),
@@ -20,6 +20,11 @@ export const cfg = {
   controlUrl: env.AWA_CONTROL_URL || "",
   cfToken: env.AWA_CF_TOKEN || "",
   relayPort: Number(env.AWA_RELAY_PORT || 18444),
+  // 安全相关
+  trustProxy: env.AWA_TRUST_PROXY === "1",        // 反代后置 1，才读 X-Forwarded-For
+  allowCidr: (env.AWA_ALLOW_CIDR || "").trim(),    // 只允许这些网段访问面板（留空=不限）
+  sessionDays: Number(env.AWA_SESSION_DAYS || 7),
+  cookieSecure: env.AWA_COOKIE_SECURE === "1",     // 非 https 时也想强制 Secure 就置 1
 };
 
 // 数据目录：写坏/不可写时给出可执行的修复建议，而不是甩一段堆栈
@@ -53,6 +58,12 @@ function loadSecret() {
 }
 
 export const secret = loadSecret();
+
+// 弱密钥告警：AWA_SECRET 写成了示例值 / 太短，会导致会话可伪造、CF Token 可解
+if (env.AWA_SECRET && (env.AWA_SECRET.length < 32 || /^(change|换成|请换成|your|test|example|secret)/i.test(env.AWA_SECRET))) {
+  console.warn("[warn] AWA_SECRET 看起来是示例值或偏短（建议 32 位以上随机串）");
+  console.warn("[warn] 生成一个：head -c16 /dev/urandom | od -An -tx1 | tr -d ' \\n'");
+}
 
 export function log(...args) {
   console.log(new Date().toISOString().slice(0, 19).replace("T", " "), ...args);

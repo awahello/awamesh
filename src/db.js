@@ -84,6 +84,8 @@ try { db.exec("ALTER TABLE relays ADD COLUMN kind TEXT DEFAULT 'derp'"); } catch
 try { db.exec("ALTER TABLE devices ADD COLUMN endpoint TEXT"); } catch {}
 try { db.exec("ALTER TABLE devices ADD COLUMN wg_port INTEGER"); } catch {}
 try { db.exec("ALTER TABLE devices ADD COLUMN node_token TEXT"); } catch {}
+// 网关角色：这台机器发布进 mesh 的内网段（逗号分隔的 CIDR）
+try { db.exec("ALTER TABLE devices ADD COLUMN routes TEXT"); } catch {}
 // 节点自己上报的公网地址（决定 P2P 可行性），与内核学到的实际映射分开存
 try { db.exec("ALTER TABLE devices ADD COLUMN reported_endpoint TEXT"); } catch {}
 

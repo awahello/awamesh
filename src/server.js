@@ -3,13 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cfg, log } from "./config.js";
-import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig } from "./api.js";
+import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig, splitRoutes, deployTailscale } from "./api.js";
 import { seedIfEmpty, pruneEvents, addEvent, demoHeartbeat, clearDemo } from "./db.js";
 import {
   ensureAdminCredential, verifyCredential, sessionToken, validSession,
   cookieHeader, clearCookieHeader,
 } from "./auth.js";
 import { backend } from "./backends/index.js";
+import { securityHeaders, sameOriginOk, makeLimiter, clientIp, isHttps, inAllowList } from "./security.js";
 import { db, setting } from "./db.js";
 import { wg, setManaged } from "./wgsrv.js";
 import { hostInCidr } from "./wg.js";
@@ -177,14 +178,23 @@ PUBIP="\$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
 [ -n "\$PUBIP" ] && curl -fsS -X POST "\$SERVER/api/join/hit" \
   -H "Authorization: Bearer \$TOKEN" -H 'Content-Type: application/json' \
   -d "{\"endpoint\":\"\$PUBIP:$(wg show \$IFACE listen-port 2>/dev/null || echo 51820)\"}" >/dev/null 2>&1 || true
-curl -fsS -H "Authorization: Bearer \$TOKEN" "\$SERVER/api/join/peers?format=shell" \
-  | while read -r kind pub addr ep name; do
-      [ "\$kind" = "PEER" ] || continue
-      if [ "\$ep" != "-" ]; then
-        wg set "\$IFACE" peer "\$pub" allowed-ips "\$addr" endpoint "\$ep" persistent-keepalive 25
-      else
-        wg set "\$IFACE" peer "\$pub" allowed-ips "\$addr" persistent-keepalive 25
-      fi
+curl -fsS -H "Authorization: Bearer \$TOKEN" "\$SERVER/api/join/state?format=shell" 2>/dev/null \
+  | while read -r kind a b c _rest; do
+      case "\$kind" in
+        PEER)
+          if [ -n "\$c" ] && [ "\$c" != "-" ]; then
+            wg set "\$IFACE" peer "\$a" allowed-ips "\$b" endpoint "\$c" persistent-keepalive 25 2>/dev/null || true
+          else
+            wg set "\$IFACE" peer "\$a" allowed-ips "\$b" persistent-keepalive 25 2>/dev/null || true
+          fi
+          ;;
+        FLAG)
+          if [ "\$a" = "forward" ] && [ "\$b" = "1" ]; then
+            sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || true
+            sysctl -qw net.ipv6.conf.all.forwarding=1 2>/dev/null || true
+          fi
+          ;;
+      esac
     done
 PEERS
   chmod +x /usr/local/bin/awa-peers
@@ -248,26 +258,58 @@ function serveStatic(res, urlPath) {
 }
 
 const joinRate = new Map();
+const loginLimit = makeLimiter({ windowMs: 60_000, max: 5 });   // 每 IP 每分钟 5 次失败
+const apiLimit = makeLimiter({ windowMs: 60_000, max: 600 });   // 正常操作足够，挡爆破/扫描
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const p = url.pathname;
+
+  securityHeaders(res, req);
+
+  const ip = clientIp(req);
+
+  // 可选 IP 白名单：AWA_ALLOW_CIDR=1.2.3.0/24,10.0.0.0/8
+  if (!inAllowList(ip, cfg.allowCidr)) {
+    log("[security] 拒绝来源 " + ip + "（不在 AWA_ALLOW_CIDR 内）");
+    return json(res, 403, { error: "来源地址不在允许范围" });
+  }
+
+  // 登录暴力破解防护
+  if (p === "/api/login" && req.method === "POST" && !loginLimit.hit(ip)) {
+    const wait = loginLimit.retryAfter(ip);
+    addEvent("auth", `登录被限速（${ip}，还需 ${wait}s）`);
+    res.setHeader("Retry-After", String(wait));
+    return json(res, 429, { error: `尝试过于频繁，请 ${wait} 秒后再试` });
+  }
+
+  // 已登录会话的写操作必须同源（挡 CSRF）
+  if (p.startsWith("/api/") && req.method !== "GET" && p !== "/api/login" && p !== "/api/join" && p !== "/api/join/hit") {
+    if (!sameOriginOk(req)) {
+      addEvent("auth", `拒绝跨站写请求（${ip} → ${p}）`);
+      return json(res, 403, { error: "跨站请求被拒绝" });
+    }
+  }
+
+  if (p.startsWith("/api/") && !apiLimit.hit(ip)) {
+    return json(res, 429, { error: "请求过于频繁" });
+  }
 
   try {
     if (p === "/api/login" && req.method === "POST") {
       const body = await readBody(req);
       const stored = setting("admin_credential");
       if (!verifyCredential(body?.secret || "", stored)) {
-        addEvent("auth", `登录失败（${req.socket.remoteAddress || "-"}）`);
+        addEvent("auth", `登录失败（${ip}）`);
         return json(res, 401, { error: "口令不正确" });
       }
-      addEvent("auth", "登录成功");
-      res.setHeader("Set-Cookie", cookieHeader(sessionToken()));
+      addEvent("auth", `登录成功（${ip}）`);
+      res.setHeader("Set-Cookie", cookieHeader(sessionToken(), undefined, isHttps(req) || cfg.cookieSecure));
       return json(res, 200, { ok: true });
     }
 
     if (p === "/api/logout" && req.method === "POST") {
-      res.setHeader("Set-Cookie", clearCookieHeader());
+      res.setHeader("Set-Cookie", clearCookieHeader(isHttps(req) || cfg.cookieSecure));
       return json(res, 200, { ok: true });
     }
 
@@ -300,6 +342,24 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, r);
     }
 
+    if (p === "/api/join/state" && req.method === "GET") {
+      const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      const data = peersForNode(token);
+      if (url.searchParams.get("format") !== "shell") return json(res, 200, data);
+
+      const roles = data.self.roles || ["node"];
+      const lines = [
+        `SELF ${data.self.address} ${roles.join(",")}`,
+        `FLAG forward ${roles.includes("gateway") ? "1" : "0"}`,
+        `FLAG relay ${roles.includes("relay") ? "1" : "0"}`,
+      ];
+      for (const x of data.peers) {
+        lines.push(`PEER ${x.publicKey} ${x.allowed} ${x.endpoint || "-"} ${x.name}`);
+      }
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+      return res.end(lines.join("\n") + "\n");
+    }
+
     if (p === "/api/join/peers" && req.method === "GET") {
       const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
       const data = peersForNode(token);
@@ -323,6 +383,25 @@ const server = http.createServer(async (req, res) => {
       const base = (cfg.controlUrl || `http://${req.headers.host || "127.0.0.1:" + cfg.port}`).replace(/\/$/, "");
       const body = tpl.replace(/\r\n/g, "\n").split("@@SERVER@@").join(base).split("@@TOKEN@@").join(dp[1]);
       res.writeHead(200, { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "no-store" });
+      return res.end(body);
+    }
+
+    if (p === "/api/deploy/ts" && req.method === "GET") {
+      const token = url.searchParams.get("token") || "";
+      const r = deployTailscale(token);
+      const out = r.authkey
+        ? `TS_AUTHKEY='${r.authkey}'\nTS_LOGIN='${r.loginServer}'\nTS_HOST='${r.hostname}'\n`
+        : "";
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+      return res.end(out);
+    }
+
+    const dpWin = p.match(/^\/dp\/(dp_[a-z0-9]{8,})\/windows$/i);
+    if (dpWin && req.method === "GET") {
+      const tpl = fs.readFileSync(new URL("./assets/deploy.ps1", import.meta.url), "utf8");
+      const base = (cfg.controlUrl || `http://${req.headers.host || "127.0.0.1:" + cfg.port}`).replace(/\/$/, "");
+      const body = tpl.replace(/\r\n/g, "\n").split("@@SERVER@@").join(base).split("@@TOKEN@@").join(dpWin[1]);
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
       return res.end(body);
     }
 
@@ -401,13 +480,13 @@ async function wgBoot() {
 
     // 容器/netns 重建后接口是空的：从库里恢复历史对端，否则重启一次全网断
     const rows = db.prepare(`
-      SELECT p.public_key, p.address, d.endpoint
+      SELECT p.public_key, p.address, d.endpoint, d.routes
       FROM wg_peers p JOIN devices d ON d.id = p.device_id
       WHERE d.revoked_at IS NULL AND p.public_key IS NOT NULL AND p.public_key != ''`).all();
     let restored = 0;
     for (const r of rows) {
       try {
-        await wg.addPeer(r.public_key, r.address);
+        await wg.addPeer(r.public_key, r.address, splitRoutes(r.routes));
         if (r.endpoint) await wg.setEndpoint(r.public_key, r.endpoint);
         restored++;
       } catch (e) {

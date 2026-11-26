@@ -130,7 +130,13 @@ curl -fsSL 'http://你的控制台:18443/dp/dp_xxxxx' | sh -s -- --iface awa0
 > 凭据长期有效、每台独立；点「吊销」或重新生成会立刻让旧命令失效。
 > 也可以走更严格的方式（私钥不出节点）：设备页「添加设备 → 生成命令」用的是 `/join.sh?key=`，节点本地 `wg genkey`，只把公钥交回来。
 
-Windows：把控制台生成的手动配置（设备列表里点该设备的「配置」）用 WireGuard 官方客户端导入即可。
+**Windows** 也是一条命令（管理员终端，先装 WireGuard 官方客户端）：
+
+```
+irm 'http://你的控制台:18443/dp/同一串凭据/windows' | iex
+```
+
+它会把配置写到 `C:\Program Files\WireGuard\Data\Configurations\awa0.conf` 并注册成隧道服务，装完即连。
 
 ### 节点之间是直连还是走控制台？
 
@@ -212,6 +218,102 @@ docker info | grep -i rootless     # 应为 false，rootless 下 NET_ADMIN 无�
 ### 如果没有 NET_ADMIN（纯面板模式）
 
 控制台检测不到 wg 命令或建不了接口时，会退回"手动模式"：添加设备直接给你三份内容（客户端配置 / 服务端 `[Peer]` / OpenWrt UCI），你粘到自己的 WireGuard 服务端。此时靠「同步状态」粘 `wg show` 刷新。
+
+## 角色：一台机器可以同时干几件事
+
+设备列表里每台都有「角色」按钮，勾选即生效 —— 控制台会在 60 秒内把变更下发到节点（`awa-peers` 每 60 秒拉一次期望状态）。
+
+| 角色 | 做的事 | 对节点的影响 |
+|---|---|---|
+| **节点** | 拿 `10.88.0.x`，和其他设备互通 | 必选，无法取消 |
+| **中继** | 打洞失败时给别的节点转发 | 面板生成 DERP 部署命令（Docker 一条） |
+| **网关** | 把它所在的局域网发布进 mesh | 勾上并填网段后，节点的 `ip_forward` 自动打开，其他节点路由里出现该网段 |
+| **出口** | 可作为全流量出口 | 仅标记 + 展示，客户端侧自选 |
+| **服务端** | 承载对外服务，配合 CF 隧道 | 仅标记，便于筛选 |
+
+关键点：**角色是控制台的属性，不是节点的配置文件**。你在面板改，节点下次拉状态时自动跟随，不需要登录那台机器。
+网段（`192.168.1.0/24`）填在「角色」弹窗里，会同时写进控制台和所有节点的对端 `AllowedIPs` —— 所以「谁能访问哪个网段」完全由控制台决定。
+
+控制台自己（部署端）同样是这五种角色的组合：它默认是**服务端 + 内置中转**，你也可以给它加「网关」把机房内网发布出来。
+
+## 把服务发布到公网（Cloudflare 隧道）
+
+任意一台设备（OpenWrt / Linux / 控制台）都能把自己的端口映射成域名，**不需要公网 IP、不开入站**：
+
+设备行 →「发布」→ 填域名 + 端口，会得到两份东西：
+
+```yaml
+# 1. 隧道 ingress（config.yml 或 Dashboard → Public Hostname）
+ingress:
+  - hostname: nas.example.com
+    service: http://10.88.0.5:8080
+  - service: http_status:404
+```
+
+```bash
+# 2. 在 mesh 内任意一台机器上起 cloudflared（必须 host 网络才能看到 10.88.0.0/24）
+docker run -d --name cf-nas --restart unless-stopped \
+  --network host \
+  cloudflare/cloudflared:latest tunnel --no-autoupdate run --token <CF_TUNNEL_TOKEN>
+```
+
+一条隧道可以为整张网发布任意多个服务 —— 加服务只改 ingress，不用再给目标机器装 cloudflared。
+
+## 兜底：UDP 被封时用 Tailscale
+
+WireGuard 走 UDP。公司网络、酒店、校园网经常只放行 443/TCP，这时隧道建不起来。三层兜底：
+
+| 层 | 用什么 | 前提 |
+|---|---|---|
+| L1 | WireGuard 直连 | 出站 UDP 51820 放行（多数网络） |
+| L2 | 自建 DERP 中继（443/18444） | 一台有公网的 VPS |
+| L3 | **Tailscale / Headscale** | 一个 authkey |
+
+L3 的配置在「设置 → 兜底通道 · Tailscale」：填 authkey（`tskey-auth-…`，生成时勾 reusable），自建 Headscale 再填 Login Server。
+
+填了之后，节点部署脚本会这样跑：
+
+```
+先起 WireGuard → 等 20 秒握手
+  ├ 握上了：正常，不做任何多余动作
+  └ 没握上：自动装 tailscale、用控制台给的 authkey 加入网络，走 443 的 DERP
+```
+
+authkey 只在节点接入那一刻下发，不写进节点上的任何配置文件；想停就在面板点「关闭兜底」。
+
+## 安全
+
+自用也要设防，这几项是内建的，不需要额外配置：
+
+| 项 | 做法 |
+|---|---|
+| 会话 | HMAC 签名 + `HttpOnly` + `SameSite=Strict`，反代 HTTPS 时自动加 `Secure` |
+| 改口令 | 设置 → 安全；改完 **session_epoch +1，所有已登录会话立即失效** |
+| 登录爆破 | 每 IP 每分钟 5 次，超过返回 429 并记事件 |
+| CSRF | 所有写操作校验 Origin/Referer 与 Host 同源，跨站直接 403 |
+| 响应头 | CSP（禁内联脚本）、`X-Frame-Options: DENY`、`nosniff`、`Referrer-Policy: no-referrer` |
+| 接口限流 | 面板 API 每 IP 每分钟 600 次；`/api/join` 每 IP 每分钟 20 次 |
+| 节点凭据 | 一次性接入密钥（哈希存库、用完即废）；部署凭据可重生成、可吊销 |
+| 敏感配置 | Cloudflare Token / Tailscale authkey 用 AES-256-GCM 加密落库，密钥来自 `AWA_SECRET` |
+| 私钥 | 控制台不存节点私钥（自助加入的节点私钥只在本机）；服务端私钥落在 `data/wg-server.key`（600） |
+| 审计 | 登录成败、改口令、加删设备/中继/隧道、发布、角色变更全部进事件表 |
+
+想再加一层，用环境变量：
+
+```yaml
+      - AWA_ALLOW_CIDR=1.2.3.0/24,10.0.0.0/8   # 只允许这些网段访问面板
+      - AWA_TRUST_PROXY=1                       # 反代后置 1，才读 X-Forwarded-For
+      - AWA_COOKIE_SECURE=1                     # 强制 Cookie 带 Secure（反代没传 proto 时用）
+      - AWA_SESSION_DAYS=3                      # 会话有效期，默认 7 天
+```
+
+`AWA_SECRET` 一定要换成 32 位以上随机串，写成示例值时启动会告警：
+
+```bash
+sed -i "s/AWA_SECRET=.*/AWA_SECRET=$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')/" docker-compose.yml
+```
+
+> 换 `AWA_SECRET` 会让已加密的 Cloudflare Token / Tailscale authkey 解不开，换完重填一次。
 
 ## 教程二：中继（默认已有内置中转）
 

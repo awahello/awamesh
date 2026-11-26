@@ -5,6 +5,7 @@ import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, 
 import crypto from "node:crypto";
 import { wg, isManaged } from "./wgsrv.js";
 import { hostInCidr, clientConfig as clientConfigText } from "./wg.js";
+import { secretSetting, saveSecretSetting } from "./secrets.js";
 
 const r = (n, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
 
@@ -111,7 +112,8 @@ export async function joinPeer(body) {
   let applied = false;
   if (isManaged()) {
     try {
-      await wg.addPeer(publicKey, address);
+      const devRow = db.prepare("SELECT routes FROM devices WHERE id = ?").get(id);
+      await wg.addPeer(publicKey, address, splitRoutes(devRow?.routes));
       if (selfEndpoint) await wg.sh("wg", ["set", wg.iface, "peer", publicKey, "endpoint", selfEndpoint]);
       applied = true;
     } catch (e) {
@@ -141,7 +143,7 @@ export function peersForNode(nodeToken) {
   if (!self) throw Object.assign(new Error("节点凭据无效"), { status: 401 });
 
   const rows = db.prepare(`
-    SELECT d.id, d.name, d.mesh_ip, d.endpoint, d.wg_port, p.public_key
+    SELECT d.id, d.name, d.mesh_ip, d.endpoint, d.wg_port, d.routes, d.roles, p.public_key
     FROM devices d JOIN wg_peers p ON p.device_id = d.id
     WHERE d.revoked_at IS NULL`).all();
 
@@ -151,12 +153,20 @@ export function peersForNode(nodeToken) {
       name: r.name,
       address: r.mesh_ip,
       publicKey: r.public_key,
+      allowed: allowedFor(r),
+      routes: splitRoutes(r.routes),
       // 有公网 endpoint 的才给直连信息，其余由 hub 兜底
       endpoint: r.endpoint ? (r.endpoint.includes(":") ? r.endpoint : `${r.endpoint}:${r.wg_port || 51820}`) : "",
     }));
 
   return {
-    self: { name: self.name, address: self.mesh_ip, endpoint: self.endpoint || "" },
+    self: {
+      name: self.name,
+      address: self.mesh_ip,
+      endpoint: self.endpoint || "",
+      roles: String(self.roles || "node").split(",").filter(Boolean),
+      routes: splitRoutes(self.routes),
+    },
     peers,
   };
 }
@@ -177,6 +187,38 @@ export async function updateNodeEndpoint(nodeToken, endpoint, port) {
   return { ok: true, changed: self.endpoint !== ep };
 }
 
+
+
+/** 把 "192.168.1.0/24, 10.0.0.0/8" 解析成数组 */
+export function splitRoutes(routes) {
+  return String(routes || "").split(/[,\s]+/).map(x => x.trim()).filter(Boolean);
+}
+
+/** 某台设备对其它节点呈现的 allowed-ips（mesh 地址 + 它发布的内网段） */
+function allowedFor(device) {
+  const list = [`${device.mesh_ip}/32`];
+  for (const c of splitRoutes(device.routes)) if (c.includes("/")) list.push(c);
+  return list.join(",");
+}
+
+
+/** Tailscale 兜底配置（可选）：UDP 被封时让节点改走 443 的 DERP */
+function tsProfile() {
+  return {
+    authkey: secretSetting("ts_authkey", process.env.AWA_TS_AUTHKEY || ""),
+    loginServer: setting("ts_login_server") || process.env.AWA_TS_LOGIN_SERVER || "",
+    enabled: !!secretSetting("ts_authkey", process.env.AWA_TS_AUTHKEY || ""),
+  };
+}
+
+/** 节点用部署凭据换取兜底配置（authkey 直接给节点，属于一次性引导凭据） */
+export function deployTailscale(token) {
+  const hash = crypto.createHash("SHA256").update(String(token || "")).digest("hex");
+  const dev = db.prepare("SELECT * FROM devices WHERE node_token = ?").get(hash);
+  if (!dev) throw Object.assign(new Error("凭据无效"), { status: 401 });
+  const p = tsProfile();
+  return { authkey: p.authkey, loginServer: p.loginServer, hostname: dev.name };
+}
 
 /** 有效 Endpoint：设置里的 > AWA_PUBLIC_HOST > 请求 Host 推导 */
 export function effectiveEndpoint(host) {
@@ -369,6 +411,21 @@ export async function api(req, res, url, body) {
     return r;
   }
 
+
+  // 改后台口令：改完所有已登录会话立即失效
+  if (url.pathname === "/api/security/credential" && method === "POST") {
+    const { verifyCredential, hashCredential, rotateSessions } = await import("./auth.js");
+    const oldPw = String(body?.old || "");
+    const next = String(body?.next || "");
+    if (!verifyCredential(oldPw, setting("admin_credential"))) throw Object.assign(new Error("当前口令不正确"), { status: 401 });
+    if (next.length < 10) throw new Error("新口令至少 10 位");
+    if (next === oldPw) throw new Error("新口令不能和旧的一样");
+    setting("admin_credential", hashCredential(next));
+    rotateSessions();
+    addEvent("auth", "后台口令已修改，所有会话失效");
+    return { ok: true };
+  }
+
   if (url.pathname === "/api/wg/profile" && method === "GET") {
     if (typeof be.profile !== "function") throw new Error("当前后端不是 wg");
     const { serverPriv, ...rest } = be.profile();
@@ -434,6 +491,67 @@ export async function api(req, res, url, body) {
     };
   }
 
+
+  // 把 mesh 内某台设备的端口，经 Cloudflare 隧道发布成域名
+  if (seg[0] === "devices" && seg[2] === "publish" && method === "POST") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+    if (dev.revoked_at) throw new Error("该设备已吊销");
+    if (!dev.mesh_ip) throw new Error("这台还没有 mesh 地址");
+
+    const hostname = String(body?.hostname || "").trim().toLowerCase().slice(0, 120);
+    const port = Number(body?.port || 0);
+    const scheme = body?.scheme === "https" ? "https" : "http";
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(hostname)) throw new Error("域名格式不对，例：nas.example.com");
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("端口范围 1-65535");
+
+    const backend = `${dev.mesh_ip}:${port}`;
+    const exist = db.prepare("SELECT * FROM tunnels WHERE hostname = ?").get(hostname);
+    if (exist) {
+      db.prepare("UPDATE tunnels SET backend = ?, health = 'unknown', last_check = ?, migratable = ? WHERE id = ?")
+        .run(backend, now(), 0, exist.id);
+    } else {
+      const id = "t_" + crypto.randomBytes(4).toString("hex");
+      db.prepare(`INSERT INTO tunnels(id,name,hostname,backend,health,latency_ms,last_check,migratable,demo)
+                  VALUES(?,?,?,?,?,?,?,?,0)`)
+        .run(id, hostname.split(".")[0], hostname, backend, "unknown", null, now(), 0);
+    }
+    addEvent("tunnel", `${hostname} → ${backend}（发布自 ${dev.name}）`, dev.id);
+
+    const ingress = `# cloudflared 的 config.yml（命名隧道）或 Dashboard → Public Hostname
+ingress:
+  - hostname: ${hostname}
+    service: ${scheme}://${backend}
+  - service: http_status:404
+`;
+    const command = `docker run -d --name cf-${hostname.split(".")[0]} --restart unless-stopped \
+  --network host \
+  cloudflare/cloudflared:latest tunnel --no-autoupdate run --token <CF_TUNNEL_TOKEN>`;
+
+    return { ok: true, hostname, backend, ingress, command,
+      note: "cloudflared 必须跑在 mesh 内的一台机器上（控制台或任意节点），用 --network host 才能看到 10.88.0.0/24" };
+  }
+
+  if (seg[0] === "devices" && seg[2] === "roles" && method === "POST") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+    const allowed = ["node", "relay", "gateway", "exit", "server"];
+    const roles = (Array.isArray(body?.roles) ? body.roles : [])
+      .map(r => String(r).trim()).filter(r => allowed.includes(r));
+    if (!roles.includes("node")) roles.unshift("node");
+    const routes = splitRoutes(body?.routes).filter(c => /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(c));
+    db.prepare("UPDATE devices SET roles = ?, routes = ? WHERE id = ?")
+      .run(roles.join(","), routes.join(","), seg[1]);
+
+    // 网段变化要同步到服务端对端的 allowed-ips，否则控制台到不了那个网段
+    const peer = db.prepare("SELECT * FROM wg_peers WHERE device_id = ?").get(seg[1]);
+    if (peer && isManaged()) {
+      try { await wg.addPeer(peer.public_key, peer.address, routes); } catch { /* 接口不在就忽略 */ }
+    }
+    addEvent("device", `${dev.name} 角色设为 ${roles.join("+")}${routes.length ? "，发布 " + routes.join(",") : ""}`, seg[1]);
+    return { ok: true, roles, routes };
+  }
+
   if (seg[0] === "devices" && seg[2] === "deploy" && method === "POST") {
     return deployInfo(seg[1], req.headers?.host || "");
   }
@@ -478,6 +596,26 @@ export async function api(req, res, url, body) {
   }
 
 
+
+  if (url.pathname === "/api/ts/profile" && method === "GET") {
+    const p = tsProfile();
+    return {
+      enabled: p.enabled,
+      hint: p.authkey ? p.authkey.slice(0, 8) + "…" : "",
+      loginServer: p.loginServer,
+    };
+  }
+
+  if (url.pathname === "/api/ts/profile" && method === "POST") {
+    if (body?.authkey !== undefined) {
+      const k = String(body.authkey).trim();
+      if (k && !/^tskey-[A-Za-z0-9_-]{10,}$/.test(k)) throw new Error("Tailscale authkey 形如 tskey-auth-xxxx");
+      saveSecretSetting("ts_authkey", k);
+      addEvent("settings", k ? "Tailscale 兜底已启用" : "Tailscale 兜底已关闭");
+    }
+    if (body?.loginServer !== undefined) setting("ts_login_server", String(body.loginServer).trim());
+    return { ok: true, enabled: tsProfile().enabled };
+  }
 
   if (url.pathname === "/api/cf/profile" && method === "GET") {
     return {
@@ -624,6 +762,9 @@ export async function api(req, res, url, body) {
       controlUrl: cfg.controlUrl,
       relayPort: cfg.relayPort,
       dataDir: cfg.dataDir,
+      allowCidr: cfg.allowCidr || "",
+      trustProxy: cfg.trustProxy,
+      sessionDays: cfg.sessionDays,
       wgManaged: isManaged(),
       wgIface: wg.iface,
       wgPeers: db.prepare("SELECT COUNT(*) c FROM wg_peers").get().c,

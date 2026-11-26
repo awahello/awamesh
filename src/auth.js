@@ -5,7 +5,7 @@ import { cfg, secret } from "./config.js";
 import { setting } from "./db.js";
 
 const DIGEST = "SHA256";
-const SESSION_TTL = 7 * 86400;
+const SESSION_TTL = Math.max(1, Number(process.env.AWA_SESSION_DAYS || 7)) * 86400;
 
 export function hashCredential(plain) {
   const salt = crypto.randomBytes(16).toString("hex");
@@ -22,9 +22,18 @@ export function verifyCredential(plain, stored) {
   return crypto.timingSafeEqual(expected, actual);
 }
 
+/** 会话纪元：改口令时 +1，让所有已签发的会话立即失效 */
+function epoch() {
+  return String(setting("session_epoch") || "0");
+}
+
+export function rotateSessions() {
+  setting("session_epoch", String(Number(epoch()) + 1));
+}
+
 export function sessionToken() {
   const ts = Math.floor(Date.now() / 1000);
-  const mac = crypto.createHmac(DIGEST, secret).update(`s|${ts}`).digest("hex");
+  const mac = crypto.createHmac(DIGEST, secret).update(`s|${epoch()}|${ts}`).digest("hex");
   return `${ts}.${mac}`;
 }
 
@@ -34,7 +43,7 @@ export function validSession(token) {
   if (!ts || !mac) return false;
   const age = Math.floor(Date.now() / 1000) - Number(ts);
   if (!Number.isFinite(age) || age < 0 || age > SESSION_TTL) return false;
-  const expect = crypto.createHmac(DIGEST, secret).update(`s|${ts}`).digest("hex");
+  const expect = crypto.createHmac(DIGEST, secret).update(`s|${epoch()}|${ts}`).digest("hex");
   const a = Buffer.from(mac, "hex");
   const b = Buffer.from(expect, "hex");
   return a.length === b.length && crypto.timingSafeEqual(a, b);
@@ -61,10 +70,10 @@ export function ensureAdminCredential() {
   return true;
 }
 
-export function cookieHeader(token, maxAge = SESSION_TTL) {
-  return `awa_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`;
+export function cookieHeader(token, maxAge = SESSION_TTL, secure = false) {
+  return `awa_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
 }
 
-export function clearCookieHeader() {
-  return "awa_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
+export function clearCookieHeader(secure = false) {
+  return `awa_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`;
 }

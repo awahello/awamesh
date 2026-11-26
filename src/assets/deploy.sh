@@ -12,6 +12,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --iface) IFACE="$2"; shift 2 ;;
     --hostname) HOST="$2"; shift 2 ;;
+    --via) VIA="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -68,6 +69,54 @@ else
   ip link set mtu "${MTU:-1420}" up dev "$IFACE" || die "启用接口失败"
 fi
 
+# ---- 兜底检测：WireGuard 20 秒内握不上手，就试 Tailscale（走 443，能穿只放行 HTTPS 的网络）----
+if [ "${VIA:-auto}" != "wg" ]; then
+  HS=""
+  i=0
+  while [ "$i" -lt 20 ]; do
+    HS="$(wg show "$IFACE" latest-handshakes 2>/dev/null | awk '{print $2}' | sort -n | tail -1)"
+    [ -n "$HS" ] && [ "$HS" != "0" ] && break
+    sleep 1
+    i=$((i + 1))
+  done
+  if [ -n "$HS" ] && [ "$HS" != "0" ]; then
+    say "    WireGuard 已握手（${i}s），不需要兜底"
+  else
+    say "    WireGuard 20 秒没握上手，尝试 Tailscale 兜底"
+    TSINFO="$(curl -fsS --max-time 8 "$SERVER/api/deploy/ts?token=$TOKEN" 2>/dev/null || true)"
+    TS_KEY="$(printf '%s' "$TSINFO" | sed -n "s/^TS_AUTHKEY='\(.*\)'$/\1/p")"
+    TS_LOGIN="$(printf '%s' "$TSINFO" | sed -n "s/^TS_LOGIN='\(.*\)'$/\1/p")"
+    if [ -z "$TS_KEY" ]; then
+      say "    控制台没配 Tailscale authkey：在「设置 → 兜底通道」填一个就能自动启用"
+    elif command -v tailscale >/dev/null 2>&1 || command -v apk >/dev/null 2>&1 || command -v apt-get >/dev/null 2>&1; then
+      if ! command -v tailscale >/dev/null 2>&1; then
+        say "    安装 tailscale"
+        if command -v apk >/dev/null 2>&1; then
+          apk add --no-cache tailscale >/dev/null 2>&1 || true
+        elif command -v apt-get >/dev/null 2>&1; then
+          (curl -fsSL https://tailscale.com/install.sh | sh) >/dev/null 2>&1 || true
+        fi
+      fi
+      if command -v tailscale >/dev/null 2>&1; then
+        if command -v systemctl >/dev/null 2>&1; then
+          systemctl enable --now tailscaled >/dev/null 2>&1 || true
+        elif command -v /etc/init.d/tailscaled >/dev/null 2>&1; then
+          /etc/init.d/tailscaled start >/dev/null 2>&1 || /etc/init.d/tailscale start >/dev/null 2>&1 || true
+        fi
+        sleep 2
+        if [ -n "$TS_LOGIN" ]; then
+          tailscale up --authkey "$TS_KEY" --hostname "$(hostname)-awa" --login-server "$TS_LOGIN" --accept-routes 2>&1 | tail -3
+        else
+          tailscale up --authkey "$TS_KEY" --hostname "$(hostname)-awa" --accept-routes 2>&1 | tail -3
+        fi
+        tailscale ip -4 2>/dev/null | head -1 | sed 's/^/    Tailscale 地址 /'
+      else
+        say "    装不上 tailscale，跳过兜底"
+      fi
+    fi
+  fi
+fi
+
 say "4/5 上报公网地址（决定能否和其他节点直连）"
 WGPORT="$(wg show "$IFACE" listen-port 2>/dev/null || echo 51820)"
 PUBIP="$(curl -fsS --max-time 6 https://api.ipify.org 2>/dev/null || curl -fsS --max-time 6 https://ifconfig.me 2>/dev/null || true)"
@@ -107,14 +156,26 @@ if [ -n "$PUBIP" ]; then
     -H 'Content-Type: application/json' \
     -d "{\"endpoint\":\"$PUBIP:$(wg show "$IFACE" listen-port 2>/dev/null || echo 51820)\"}" >/dev/null 2>&1 || true
 fi
-curl -fsS -H "Authorization: Bearer $TOKEN" "$SERVER/api/join/peers?format=shell" 2>/dev/null \
-  | while read -r kind pub addr ep name; do
-      [ "$kind" = "PEER" ] || continue
-      if [ "$ep" != "-" ] && [ -n "$ep" ]; then
-        wg set "$IFACE" peer "$pub" allowed-ips "$addr" endpoint "$ep" persistent-keepalive 25 2>/dev/null || true
-      else
-        wg set "$IFACE" peer "$pub" allowed-ips "$addr" persistent-keepalive 25 2>/dev/null || true
-      fi
+curl -fsS -H "Authorization: Bearer $TOKEN" "$SERVER/api/join/state?format=shell" 2>/dev/null \
+  | while read -r kind a b c _rest; do
+      case "$kind" in
+        PEER)
+          # a=公钥 b=allowed-ips（含网关发布的网段） c=endpoint 或 -
+          if [ -n "$c" ] && [ "$c" != "-" ]; then
+            wg set "$IFACE" peer "$a" allowed-ips "$b" endpoint "$c" persistent-keepalive 25 2>/dev/null || true
+          else
+            wg set "$IFACE" peer "$a" allowed-ips "$b" persistent-keepalive 25 2>/dev/null || true
+          fi
+          ;;
+        FLAG)
+          # 控制台下发的角色开关：a=名字 b=值
+          if [ "$a" = "forward" ] && [ "$b" = "1" ]; then
+            sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || \
+              (echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true)
+            sysctl -qw net.ipv6.conf.all.forwarding=1 2>/dev/null || true
+          fi
+          ;;
+      esac
     done
 PEERS
 printf '%s' "$IFACE" > /etc/wireguard/awa.iface

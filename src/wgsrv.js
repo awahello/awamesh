@@ -65,8 +65,9 @@ export const wg = {
     return true;
   },
 
-  async addPeer(publicKey, address) {
-    await this.sh("wg", ["set", this.iface, "peer", publicKey, "allowed-ips", `${address}/32`]);
+  async addPeer(publicKey, address, extraCidrs = []) {
+    const allowed = [`${address}/32`, ...(extraCidrs || []).filter(Boolean)].join(",");
+    await this.sh("wg", ["set", this.iface, "peer", publicKey, "allowed-ips", allowed]);
   },
 
   async setEndpoint(publicKey, endpoint) {
