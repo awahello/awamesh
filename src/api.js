@@ -142,12 +142,16 @@ export function peersForNode(nodeToken) {
   if (self.revoked_at) throw Object.assign(new Error("该设备已吊销，请清理本机配置"), { status: 401 });
 
   const rows = db.prepare(`
-    SELECT d.id, d.name, d.mesh_ip, d.endpoint, d.wg_port, d.routes, d.roles, p.public_key
+    SELECT d.id, d.name, d.mesh_ip, d.endpoint, d.wg_port, d.routes, d.roles, d.p2p, p.public_key
     FROM devices d JOIN wg_peers p ON p.device_id = d.id
     WHERE d.revoked_at IS NULL`).all();
 
+  // P2P 关闭（全局或单台）：不下发 /32 对端，流量自然会落到控制台的 10.88.0.0/24 上，
+  // 由控制台转发 —— 打洞总是失败的网络（对称 NAT / 代理）靠这个保证互通。
+  const p2pGlobal = setting("p2p") !== "0";
+
   const peers = rows
-    .filter(r => r.id !== self.id)
+    .filter(r => r.id !== self.id && p2pGlobal && r.p2p !== 0)
     .map(r => ({
       name: r.name,
       address: r.mesh_ip,
@@ -1022,6 +1026,24 @@ ingress:
       `curl -fsSL -H "Authorization: Bearer ${token}" '${base}/api/join/peers.sh' | sh`;
     addEvent("device", `为 ${dev.name} 生成凭据修复命令${reused ? "（沿用现有）" : "（已重新签发）"}`, seg[1]);
     return { token, reused, command };
+  }
+
+
+  // 单台开关：关掉后它只经控制台转发（对称 NAT / 代理环境用）
+  if (seg[0] === "devices" && seg[2] === "p2p" && method === "POST") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+    const on = body?.enabled === undefined ? !(dev.p2p !== 0) : !!body.enabled;
+    db.prepare("UPDATE devices SET p2p = ? WHERE id = ?").run(on ? 1 : 0, seg[1]);
+    addEvent("device", `${dev.name} ${on ? "开启" : "关闭"} P2P 直连（60 秒内生效）`, seg[1]);
+    return { ok: true, p2p: on };
+  }
+
+  if (url.pathname === "/api/settings/p2p" && method === "POST") {
+    const on = body?.enabled !== false;
+    setting("p2p", on ? "1" : "0");
+    addEvent("settings", on ? "开启 P2P 直连" : "关闭 P2P：所有节点间流量经控制台转发");
+    return { ok: true, p2p: on };
   }
 
   if (seg[0] === "devices" && seg[2] === "uninstall" && method === "GET") {

@@ -561,6 +561,7 @@ function guideBox({ title, steps, notes = [], href, hrefText }) {
 async function viewSettings(main) {
   const s = await api("/api/settings");
   const wg = S.backend === "wg" ? await api("/api/wg/profile") : null;
+  if (wg) S.p2p = wg.p2p !== false;
   const cf = await api("/api/cf/profile").catch(() => ({ enabled: false, tokenSet: false, account: "" }));
   const ts = await api("/api/ts/profile").catch(() => ({ enabled: false, hint: "", loginServer: "" }));
   const upd = await api("/api/update/check").catch(() => null);
@@ -731,6 +732,7 @@ async function viewSettings(main) {
           <button class="btn ${wg.mode === "custom" ? "" : "primary"}" data-mode="builtin">自动 · 部署端当服务端</button>
           <button class="btn ${wg.mode === "custom" ? "primary" : ""}" data-mode="custom">自定义 · 中继 / OpenWrt / 端口映射</button>
           <button class="btn" id="wgCheck">检测连通性</button>
+          <button class="btn" id="toggleP2P">${(S.p2p === false) ? "开启 P2P 直连" : "关闭 P2P（全走控制台）"}</button>
         </div>
         <div id="wgCheckOut"></div>
 
@@ -814,7 +816,15 @@ async function viewSettings(main) {
       catch (e) { toast(e.message, true); }
     };
 
-    main.querySelector("#wgCheck").onclick = async () => {
+    main.querySelector("#toggleP2P").onclick = async () => {
+    try {
+      const on = S.p2p === false;
+      await api("/api/settings/p2p", { method: "POST", body: JSON.stringify({ enabled: on }) });
+      toast(on ? "已开启 P2P（60 秒内生效）" : "已关闭 P2P：节点间流量经控制台转发（60 秒内生效）");
+      renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#wgCheck").onclick = async () => {
       const out = main.querySelector("#wgCheckOut");
       out.innerHTML = '<div class="dim" style="font-size:11px;margin-bottom:8px">检测中…</div>';
       try {
