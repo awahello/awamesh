@@ -57,6 +57,21 @@ fi
 ADDR="$(sed -n 's/^Address = \(.*\)$/\1/p' "$CONF" | head -1)"
 
 say "3/5 启动接口 $IFACE"
+
+# 网段冲突：如果已经有别的接口占用同一个 /24（比如你原有的 wg0 也用 10.88.0.x），
+# 两个接口抢同一条路由，表现是"时通时不通"。这里直接拦住，让用户改 mesh 网段。
+NETPREFIX="$(echo "$ADDR" | sed 's#\.[0-9]*/.*##')"
+if [ -n "$NETPREFIX" ]; then
+  OWN="$(ip -4 addr show "$IFACE" 2>/dev/null | grep -c "inet ${NETPREFIX}\." || true)"
+  OTHER="$(ip -4 addr show 2>/dev/null | grep "inet ${NETPREFIX}\." | grep -v " ${IFACE}$" | head -1)"
+  if [ "$OWN" = "0" ] && [ -n "$OTHER" ]; then
+    echo "    ! 网段冲突：已有接口在用 ${NETPREFIX}.0/24 → $OTHER" >&2
+    echo "      两个接口抢同一段路由会时通时不通。处理办法（任选一个）：" >&2
+    echo "      1) 控制台「设置 → WireGuard 服务端 → Mesh 网段」改成 10.99.0.0/24，再重新点一键部署" >&2
+    echo "      2) 把那台已有接口的网段改掉" >&2
+    die "网段冲突，已中止（本机配置未改动）"
+  fi
+fi
 if [ -f /etc/config/network ] && command -v uci >/dev/null 2>&1; then
   # ---- OpenWrt：写 UCI，交给 /etc/init.d/network（原生方式，不用 ip-full）----
   say "    OpenWrt 检测到：用 UCI 配置 $IFACE"
@@ -86,7 +101,32 @@ if [ -f /etc/config/network ] && command -v uci >/dev/null 2>&1; then
     [ -n "$cidr" ] && uci add_list network.wgawa0.allowed_ips="$cidr"
   done
   uci commit network
+
+  # 防火墙：awa0 默认不属于任何 zone，不建 zone 的话别人访问不到你、你也转发不出去
+  if command -v uci >/dev/null 2>&1 && [ -f /etc/config/firewall ]; then
+    uci -q delete firewall.awamesh >/dev/null 2>&1 || true
+    uci set firewall.awamesh=zone
+    uci set firewall.awamesh.name='awamesh'
+    uci set firewall.awamesh.input='ACCEPT'
+    uci set firewall.awamesh.output='ACCEPT'
+    uci set firewall.awamesh.forward='ACCEPT'
+    uci set firewall.awamesh.masq='1'
+    uci set firewall.awamesh.mtu_fix='1'
+    uci add_list firewall.awamesh.network='awa0'
+    # 允许 awa0 <-> lan 互通（网关角色靠这条把内网发布出去）
+    uci -q delete firewall.awamesh_lan >/dev/null 2>&1 || true
+    uci set firewall.awamesh_lan=forwarding
+    uci set firewall.awamesh_lan.src='awamesh'
+    uci set firewall.awamesh_lan.dest='lan'
+    uci -q delete firewall.lan_awamesh >/dev/null 2>&1 || true
+    uci set firewall.lan_awamesh=forwarding
+    uci set firewall.lan_awamesh.src='lan'
+    uci set firewall.lan_awamesh.dest='awamesh'
+    uci commit firewall
+  fi
+
   /etc/init.d/network reload >/dev/null 2>&1 || /etc/init.d/network restart >/dev/null 2>&1 || true
+  [ -x /etc/init.d/firewall ] && /etc/init.d/firewall reload >/dev/null 2>&1 || true
   sleep 3
   if ! ip addr show "$IFACE" >/dev/null 2>&1; then
     die "UCI 配置已写入但接口没起来：检查 opkg 是否装了 kmod-wireguard（opkg install kmod-wireguard）"
@@ -203,6 +243,13 @@ case "$CODE" in
       uci -q delete network.awa0 >/dev/null 2>&1 || true
       uci -q delete network.wgawa0 >/dev/null 2>&1 || true
       uci commit network >/dev/null 2>&1 || true
+      if [ -f /etc/config/firewall ]; then
+        uci -q delete firewall.awamesh >/dev/null 2>&1 || true
+        uci -q delete firewall.awamesh_lan >/dev/null 2>&1 || true
+        uci -q delete firewall.lan_awamesh >/dev/null 2>&1 || true
+        uci commit firewall >/dev/null 2>&1 || true
+        [ -x /etc/init.d/firewall ] && /etc/init.d/firewall reload >/dev/null 2>&1 || true
+      fi
       /etc/init.d/network reload >/dev/null 2>&1 || true
     fi
     ip link del "$IFACE" >/dev/null 2>&1 || true

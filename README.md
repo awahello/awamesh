@@ -231,6 +231,32 @@ wg show awa0 endpoints          # 看对端 endpoint 是否已变成公网地址
 /usr/local/bin/awa-peers        # 手动触发一次 peer 表刷新
 ```
 
+### OpenWrt 上已经有 WireGuard 服务端，会冲突吗
+
+**不冲突，但有三处要避开。** awamesh 在节点上建的是一个**独立的新接口** `awa0`（客户端），和你现有的 `wg0`（服务端）互不干扰：
+
+| 要避开 | 为什么会撞 | 怎么处理 |
+|---|---|---|
+| **网段** | 你现有的 `wg0` 如果也用 `10.88.0.0/24`，两个接口抢同一条路由 → 表现是「时通时不通」 | 控制台「设置 → WireGuard 服务端 → Mesh 网段」改成 `10.99.0.0/24`，重新点一键部署。脚本现在会**先检测**，撞了直接中止并提示（本机配置不改） |
+| **UDP 端口** | 现有 `wg0` 常监听 51820 | 不影响：`awa0` 是客户端，监听端口由内核随机分配，不占 51820 |
+| **防火墙 zone** | OpenWrt 新建的接口默认不属于任何 zone，`input/forward` 全被拒 → 外面连不上你 | 脚本会自动建 `awamesh` zone（input/output/forward ACCEPT、masq、mtu_fix）并加两条 forwarding 与 `lan` 互通；卸载时一并删掉 |
+
+用 UCI 装好之后，`/etc/config/network` 里会是这样，和你原有 `wg0` 两段并存：
+
+```
+config interface 'awa0'          # awamesh 建的
+    option proto 'wireguard'
+    ...
+config wireguard_awa0
+    option public_key '...'
+    list allowed_ips '10.88.0.0/24'
+
+config interface 'wg0'           # 你原有的，脚本一个字都不动
+    ...
+```
+
+另外注意：**别把同一个 `192.168.1.0/24` 既发布到旧 `wg` 又勾成 awamesh 的网关角色** —— 回程路由会不对称。要发布就只在 awamesh 这边发布一次。
+
 ### 家里 OpenWrt 没有公网 IP 还能用吗
 
 **能，而且这是常规情况。** 只有**控制台那一台**需要公网地址；OpenWrt 是客户端，只负责"向控制台拨出去"。
@@ -551,6 +577,8 @@ docker compose logs --tail 30 awamesh | grep "\[wg\]"
 
 | 版本 | 主要变化 |
 |---|---|
+| **0.4.2** | OpenWrt 上自动建 firewall zone（否则 forward 全被拒）；开始前检测网段冲突并中止；卸载时一并清理 zone |
+| 0.4.1 | `install.sh` 重写为一键安装；OpenWrt 改用 UCI 配置 `awa0`；架构图对齐实现 |
 | **0.4.0** | 备份与迁移（导出/导入整份配置）；全新「深海青」配色；页脚版权 www.akkdiy.cn |
 | 0.3.9 | 修入口脚本条件写错导致容器永远以非 root 运行（即使 `privileged` 也建不了 `awa0`）；启动日志打印运行身份 uid |
 | 0.3.8 | `upgrade.sh` 先校验 compose，自动修复重复的 `privileged` 键（原文件留 `.broken` 备份） |

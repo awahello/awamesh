@@ -2,6 +2,17 @@
 
 本项目遵循语义化版本；`0.x` 阶段内部结构可能调整，升级前请备份 `data/`。
 
+## 0.4.2
+- OpenWrt：自动创建 `awamesh` firewall zone（input/output/forward ACCEPT + masq + mtu_fix）与两条 forwarding，
+  避免「接口起来了但外面访问不到」；卸载时一并删除 zone
+- 接入前检测网段冲突（已有接口占用同一 /24 时直接中止并给出改法）
+
+## 0.4.1
+- `install.sh` 重写：端口避让（TCP/UDP）、生成并复用 `AWA_SECRET`、健康检查打印版本与首次口令、
+  `awa0` 未托管时给出 `privileged` 修复命令
+- `deploy.sh`：OpenWrt 检测到 `uci` 时改用 UCI 写 `awa0` + `network reload`（不再需要 `ip link`）；`opkg` 装 `kmod-wireguard`
+- README 架构图重画：去掉 Headscale，标注内置 WireGuard 服务端与 cloudflared 位置
+
 ## 0.4.0
 - 新增备份与迁移：`GET /api/backup/export`、`POST /api/backup/import`（覆盖 / 合并），
   导出不含后端口令，敏感字段仍由 `AWA_SECRET` 加密
