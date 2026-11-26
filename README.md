@@ -471,7 +471,8 @@ cd /opt/awamesh
 tar czf backup-$(date +%F).tgz data        # 先备份：配置、密钥、首次口令都在 data/
 docker compose pull
 docker compose up -d --force-recreate
-curl -s localhost:18443/api/health         # 确认版本，例如 {"ok":true,"version":"0.2.0"}
+curl -s localhost:18443/api/health         # {"ok":true,"version":"0.3.4"}
+docker compose logs --tail 20 awamesh | grep -E "\[wg\]|已启动"
 ```
 
 三条命令跑完还是旧版（`version` 没变）？按顺序清一遍：
@@ -483,7 +484,44 @@ docker compose pull && docker compose up -d
 curl -s localhost:18443/api/health
 ```
 
-页面还是旧界面？静态资源带 `?v=版本号`，正常刷新就行；顽固的话 `Ctrl+Shift+R` 强刷或开无痕。左下角显示的 `v0.2.0` 是最直接的判据。
+页面还是旧界面？静态资源带 `?v=版本号`，正常刷新就行；顽固的话 `Ctrl+Shift+R` 强刷或开无痕。**左下角显示的 `v0.3.4` 是最直接的判据。**
+
+### 从旧版本升级后要做的一次性动作
+
+| 从哪版升上来 | 必须做什么 |
+|---|---|
+| < 0.3.4 | 中继如果是早前装的，先在那台机器 `docker rm -f awamesh-derp`，再在面板「中继 → 删除 → 添加 → 接入命令」重装（新版才有自动卸载） |
+| < 0.3.2 | 面板 → **设置 → 对外地址** 填 `https://你的域名` 并点「测一下」；然后每台设备重新点「一键部署」拿新命令（旧命令里的地址带 `:18443`，过 CF 会超时） |
+| < 0.3.0 | 节点上重跑一次接入命令（新版会装每 60 秒的对端同步与自清理） |
+| < 0.2.0 | 没有可回滚的必要，直接按上面重装最省事 |
+
+**升级后自检三件事**：
+
+```bash
+# 1) 版本对不对
+curl -s localhost:18443/api/health
+
+# 2) 接口有没有被接管（应看到 [wg] 已接管接口 awa0）
+docker compose logs --tail 30 awamesh | grep "\[wg\]"
+
+# 3) 生成的部署命令是不是 https 且不带端口
+#    面板 → 设备 → 一键部署，命令里不应出现 :18443
+```
+
+### 版本历史
+
+| 版本 | 主要变化 |
+|---|---|
+| **0.3.4** | 中继「停用」只停容器、「删除」才卸载；`awa-relay.timer` 自检 |
+| 0.3.3 | 面板删除后机器端自动卸载（设备 + 中继），离线可复制手动卸载命令 |
+| 0.3.2 | 修反代场景部署命令带错端口（CF 不代理 18443）；新增「对外地址」；吊销/删除后节点收到 401 自动清理 |
+| 0.3.1 | WireGuard 卡片分「自动 / 自定义」两种模式；连通性自检；UDP 端口自动避让；Cloudflare/Tailscale 卡片内置获取教程 |
+| 0.3.0 | 角色可叠加（节点/中继/网关/出口/服务端）；Windows 一键接入；CF 隧道发布；Tailscale 兜底；安全基线（CSRF/限速/CSP/改口令即失效） |
+| 0.2.2 | 无公网也能接入：CGNAT 判定 + IPv6 优先 + 内核学到的真实 endpoint |
+| 0.2.1 | 一键部署（受控端一条 `curl \| sh`）；NET_ADMIN 自检 |
+| 0.2.0 | 控制台自己当 WireGuard 服务端；`wg show` 状态导入 |
+
+完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 **中继节点单独更新**（那台如果是用 Docker 跑 derper）：
 
@@ -500,10 +538,10 @@ docker run -d --name awamesh-derp --restart unless-stopped \
 | 事项 | 说明 |
 |---|---|
 | 数据安全 | 全部在 `./data`（SQLite + 服务端密钥 + 首次口令），换镜像不影响；备份就是打包这个目录 |
-| `AWA_SECRET` | **更新时不要顺手改它** —— 改了会让已保存的 Cloudflare Token 解不开，需要重填 |
-| 端口变更 | 若新版本改了默认端口，`ports` 与 `AWA_PORT` 要同时改（默认 18443 / 中继 18444） |
+| `AWA_SECRET` | **不要顺手改** —— 改了已加密的 Cloudflare Token / Tailscale authkey 会解不开，需要重填 |
+| 端口变更 | 面板默认 18443、中继 18444；WireGuard 的 UDP 端口会自动避让，看日志里的实际值 |
 | 权限 | compose 里的 `cap_add: [NET_ADMIN, SYS_MODULE]` 别丢，丢了会退回"手动配置"模式 |
-| 回滚 | 备份的 `data/` 解回原处 + 用旧版本镜像 tag 起容器即可 |
+| 回滚 | 备份的 `data/` 解回原处 + 用旧版本 tag 起容器即可 |
 
 ## 命令速查
 
@@ -675,10 +713,13 @@ flowchart TB
 ## 自测
 
 ```bash
-npm run selftest      # 拉起临时实例，跑 21 项断言后自动清理
+npm test          # 三套全跑，共 68 项
+npm run selftest     # 21 项：鉴权、设备、密钥、接入脚本、中继开关、隧道同步、404
+npm run test:deploy  # 29 项：一键部署凭据、反代命令不带端口、对外地址、吊销/删除 401、卸载命令、中继自检
+npm run test:security # 18 项：CSP/X-Frame、CSRF、登录限速、改口令即失效、角色与网段、发布、兜底配置校验
 ```
 
-覆盖：鉴权与越权、设备筛选/搜索/改名、密钥生成、接入脚本、中继开关与地图、隧道同步报错、404 等。
+三套都是**拉起临时实例 + 随机端口 + 临时数据目录**，跑完自动清理，不会碰你的 `data/`。
 
 ---
 
