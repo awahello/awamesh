@@ -594,6 +594,7 @@ CODE="$(curl -sS -o /tmp/awa-relay.state -w '%{http_code}' --max-time 8 \
 
 case "$CODE" in
   200)
+    : > /tmp/awa-relay.401 2>/dev/null || true
     BODY="$(cat /tmp/awa-relay.state 2>/dev/null || true)"
     case "$BODY" in
       *'"enabled":false'*)
@@ -607,8 +608,15 @@ case "$CODE" in
     esac
     exit 0
     ;;
-  401|403|404)
-    echo "awamesh: 这台中继已在控制台删除/停用，开始卸载" >&2
+  401)
+    n="$(cat /tmp/awa-relay.401 2>/dev/null || echo 0)"
+    n=$((n + 1))
+    echo "$n" > /tmp/awa-relay.401
+    if [ "$n" -lt 3 ]; then
+      echo "awamesh: 中继自检收到 401（第 $n/3 次），下一轮再确认" >&2
+      exit 0
+    fi
+    echo "awamesh: 连续 3 次 401，确认已在控制台删除，开始卸载" >&2
     if command -v docker >/dev/null 2>&1; then
       docker rm -f awamesh-derp >/dev/null 2>&1 || true
       docker image rm -f ghcr.io/awahello/awamesh-relay:latest >/dev/null 2>&1 || true
@@ -622,7 +630,7 @@ case "$CODE" in
       systemctl daemon-reload >/dev/null 2>&1 || true
     fi
     command -v crontab >/dev/null 2>&1 && { crontab -l 2>/dev/null | grep -v awa-relay-check | crontab - 2>/dev/null || true; }
-    rm -f /etc/awa-relay.token /etc/awa-relay.server /usr/local/bin/awa-relay-check
+    rm -f /etc/awa-relay.token /etc/awa-relay.server /usr/local/bin/awa-relay-check /tmp/awa-relay.401
     echo "awamesh: 中继已卸载（容器 / systemd / 凭据全部清除）" >&2
     ;;
 esac

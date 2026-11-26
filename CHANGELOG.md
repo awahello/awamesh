@@ -2,6 +2,10 @@
 
 本项目遵循语义化版本；`0.x` 阶段内部结构可能调整，升级前请备份 `data/`。
 
+## 0.4.3
+- 节点 `awa-peers` 与中继 `awa-relay-check` 的自清理改为「连续 3 次 401」才执行；
+  200 清零计数，000/502/404 一律不动 —— 控制台升级、反代重启不会误删受控端配置
+
 ## 0.4.2
 - OpenWrt：自动创建 `awamesh` firewall zone（input/output/forward ACCEPT + masq + mtu_fix）与两条 forwarding，
   避免「接口起来了但外面访问不到」；卸载时一并删除 zone

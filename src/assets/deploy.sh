@@ -233,11 +233,19 @@ fi
 CODE="$(curl -sS -o /tmp/awa.state -w '%{http_code}' --max-time 10 \
   -H "Authorization: Bearer $TOKEN" "$SERVER/api/join/state?format=shell" 2>/dev/null || echo 000)"
 
+STRIKE="/etc/wireguard/awa.401"
 case "$CODE" in
-  200) : ;;
-  401|403)
-    # 控制台已删除/吊销这台设备：把本机配置一并清掉，不留残余
-    echo "awamesh: 凭据已失效（设备在控制台被删除或吊销），正在清理本机配置" >&2
+  200) : > "$STRIKE" 2>/dev/null || true ;;
+  401)
+    # 只有「连续 3 次 401」才认定被删除 —— 控制台升级/重启期间偶发的 401 不会误删本机配置
+    n=$(cat "$STRIKE" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    echo "$n" > "$STRIKE" 2>/dev/null || true
+    if [ "$n" -lt 3 ]; then
+      echo "awamesh: 收到 401（第 $n/3 次），先不动本机，下一轮再确认" >&2
+      exit 0
+    fi
+    echo "awamesh: 连续 3 次 401，确认设备已被删除/吊销，开始清理本机配置" >&2
     command -v wg-quick >/dev/null 2>&1 && wg-quick down "$IFACE" >/dev/null 2>&1 || true
     if [ -f /etc/config/network ] && command -v uci >/dev/null 2>&1; then
       uci -q delete network.awa0 >/dev/null 2>&1 || true
@@ -253,7 +261,7 @@ case "$CODE" in
       /etc/init.d/network reload >/dev/null 2>&1 || true
     fi
     ip link del "$IFACE" >/dev/null 2>&1 || true
-    rm -f /etc/wireguard/"$IFACE.conf" /etc/wireguard/awa.token /etc/wireguard/awa.iface
+    rm -f /etc/wireguard/"$IFACE.conf" /etc/wireguard/awa.token /etc/wireguard/awa.iface /etc/wireguard/awa.401
     if command -v systemctl >/dev/null 2>&1; then
       systemctl disable --now awa-peers.timer >/dev/null 2>&1 || true
       rm -f /etc/systemd/system/awa-peers.timer /etc/systemd/system/awa-peers.service
