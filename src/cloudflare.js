@@ -49,6 +49,12 @@ export async function listAccounts() {
   return cf("/accounts?per_page=50");
 }
 
+/** 只验证「这个 Token 能不能读这个账户的隧道」，轻量调用 */
+export async function pingAccount(accountId) {
+  const list = await cf(`/accounts/${accountId}/cfd_tunnel?per_page=1`);
+  return { ok: true, tunnels: Array.isArray(list) ? list.length : 0 };
+}
+
 /** 取某个账户下的隧道，并展开 ingress 规则 */
 export async function listTunnels(accountId) {
   const tunnels = await cf(`/accounts/${accountId}/cfd_tunnel?is_deleted=false&per_page=50`);

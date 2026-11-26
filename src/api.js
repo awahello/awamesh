@@ -1,7 +1,7 @@
 import { cfg } from "./config.js";
 import { db, now, setting, listRelays, listTunnels, listEvents, addEvent } from "./db.js";
 import { backend } from "./backends/index.js";
-import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, listTunnels as cfListTunnels, toRows } from "./cloudflare.js";
+import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows } from "./cloudflare.js";
 import crypto from "node:crypto";
 import { wg, isManaged } from "./wgsrv.js";
 import { hostInCidr, clientConfig as clientConfigText } from "./wg.js";
@@ -1060,11 +1060,42 @@ ingress:
   }
 
   if (url.pathname === "/api/cf/test" && method === "POST") {
-    if (!cfEnabled()) throw new Error("还没填 Token");
-    const accounts = await listAccounts();
-    if (accounts[0] && !cfAccount()) setCfAccount(accounts[0].id);
-    addEvent("settings", `Cloudflare 连接正常（${accounts.length} 个账户）`);
-    return { ok: true, accounts: accounts.map(a => ({ id: a.id, name: a.name })) };
+    if (!cfEnabled()) throw new Error("还没填 Token（设置 → Cloudflare）");
+
+    // GET /accounts 需要「Account → Account Settings → Read」；
+    // 只给 Cloudflare Tunnel 权限的 Token 会返回空数组，这不是 Token 错，是权限不够列账户。
+    const accounts = await listAccounts().catch(() => []);
+
+    let account = cfAccount();
+    if (accounts.length && !account) {
+      account = accounts[0].id;
+      setCfAccount(account);
+    }
+    if (!account) {
+      throw Object.assign(
+        new Error("这个 Token 没有「Account → Account Settings → Read」，列不出账户。请在下面「Account ID」填上那串 32 位字符串再测"),
+        { status: 400 }
+      );
+    }
+
+    let ping;
+    try {
+      ping = await pingAccount(account);
+    } catch (e) {
+      throw Object.assign(
+        new Error(`读该账户的隧道失败：${e.message}（Token 需要 Account → Cloudflare Tunnel → Read）`),
+        { status: 502 }
+      );
+    }
+
+    addEvent("settings", `Cloudflare 连接正常（账户 ${account.slice(0, 8)}…，${ping.tunnels} 条隧道可读）`);
+    return {
+      ok: true,
+      account,
+      tunnelCount: ping.tunnels,
+      accounts: accounts.map(a => ({ id: a.id, name: a.name })),
+      canListAccounts: accounts.length > 0,
+    };
   }
 
   if (url.pathname === "/api/tunnels/sync" && method === "POST") {

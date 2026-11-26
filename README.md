@@ -133,6 +133,36 @@ awamesh 自己就是 WireGuard 服务端：密钥、地址、对端全部由控�
 
 **没公网也能跑**：节点主动出站连控制台，映射照样建立；跨节点流量经控制台转发（内置中转）。UDP 走不通就落到 Tailscale（443）。
 
+### Cloudflare 测试连接显示「0 个账户」？
+
+不是 Token 错，是**权限模型**的区别：
+
+| 接口 | 需要什么权限 | 你给的 |
+|---|---|---|
+| `GET /accounts`（列账户） | **Account → Account Settings → Read** | ❌ 一般不会给 |
+| `GET /accounts/<id>/cfd_tunnel`（读隧道） | Account → Cloudflare Tunnel → Read | ✅ 你给了 |
+
+只给 Tunnel 权限的 Token，`/accounts` 会返回**空数组**（不是报错），所以早期版本会显示"连接正常，0 个账户"。0.4.6 起改成明确报错，并让你手填。
+
+两条路，选一个：
+
+**A. 直接填 Account ID（推荐，不用改 Token）**
+
+Account ID 在 Cloudflare 首页右栏「Account ID」，或地址栏里 `/accounts/<32位十六进制>` 那一段。填进「设置 → Cloudflare → Account ID」再点测试即可，读隧道走的是账户维度接口，只给 Tunnel 权限就够。
+
+**B. 给 Token 补一条权限**
+
+Edit Token → 加 `Account → Account Settings → Read` → 保存，之后就能自动列出账户。
+
+顺带把权限收敛一下：
+
+| 权限 | 用途 | 是否必须 |
+|---|---|---|
+| Account → Cloudflare Tunnel → **Read** | 读隧道与 ingress | ✅ 必须 |
+| Zone → DNS → **Read** | 看域名指向对不对 | 建议 |
+| Account → Cloudflare Tunnel → Write | 由面板自动创建隧道 | 暂时不需要 |
+| Zone → DNS → Write | 由面板改 ingress/DNS | 暂时不需要（0.5 的「改指 mesh」才用） |
+
 ### 走 Cloudflare / Nginx 反代时：一定要填「对外地址」
 
 界面上访问用的是 `https://awamesh.example.com`（443，无反代端口），但控制台内部监听的是 18443。生成部署命令时如果拼上 `:18443`，节点那边必然 `Connection timed out` —— **Cloudflare 只代理 80/8080/443/2053/2083/2087/8443 这些端口，18443 不在其中**。
@@ -669,6 +699,8 @@ docker compose logs --tail 30 awamesh | grep "\[wg\]"
 
 | 版本 | 主要变化 |
 |---|---|
+| **0.4.6** | Cloudflare「0 个账户」修复：缺 Account Settings 权限时明确报错并引导手填 Account ID，测试改为账户维度校验 |
+| 0.4.5 | join.sh 支持精简 OpenWrt（hostname 兜底 / JSON 转义 / UCI 分支） |
 | **0.4.4** | 每日自动备份到 `data/auto-backup/`（保留 7 份）；新增「多部署端与高可用」章节 |
 | **0.4.3** | 节点/中继自清理改为「连续 3 次 401」才执行，升级或反代抖动不会误删受控端 |
 | **0.4.2** | OpenWrt 上自动建 firewall zone（否则 forward 全被拒）；开始前检测网段冲突并中止；卸载时一并清理 zone |

@@ -647,7 +647,7 @@ async function viewSettings(main) {
         })}
         <label class="dim" style="font-size:11px">API Token（Account:Tunnel:Read + Zone.DNS:Read；AES-GCM 加密存本地库）</label>
         <input id="cfToken" placeholder="粘贴 Token，留空表示不修改" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
-        <label class="dim" style="font-size:11px">Account ID（可留空，测试连接后自动填）</label>
+        <label class="dim" style="font-size:11px">Account ID（Token 只给了 Tunnel 权限时必须手填；在 CF 首页右栏，或地址栏 /accounts/ 后面那 32 位）</label>
         <input id="cfAcct" value="${esc(cf.account)}" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn primary" id="saveCf">保存</button>
@@ -915,7 +915,7 @@ async function viewSettings(main) {
   main.querySelector("#testCf").onclick = async () => {
     try {
       const r = await api("/api/cf/test", { method: "POST", body: "{}" });
-      toast(`连接正常，${r.accounts.length} 个账户：${r.accounts.map(a => a.name).join(" / ")}`);
+      toast(`连接正常 · 账户 ${String(r.account).slice(0, 8)}… · 可读 ${r.tunnelCount} 条隧道`);
       renderView();
     } catch (e) { toast(e.message, true); }
   };
