@@ -283,7 +283,7 @@ while read -r kind a b c _rest; do
           ;;
       esac
     done < /tmp/awa.state
-rm -f /tmp/awa.state
+# 保留 /tmp/awa.state 方便排查（每次覆盖，不占空间）
 PEERS
   chmod +x "$BINDIR/awa-peers"
 
@@ -765,7 +765,7 @@ while read -r kind a b c _rest; do
       fi ;;
   esac
 done < /tmp/awa.state
-rm -f /tmp/awa.state
+# 保留 /tmp/awa.state 方便排查（每次覆盖，不占空间）
 PEERS
 chmod +x "$BINDIR/awa-peers"
 echo "  ✓ 已写入 $BINDIR/awa-peers"

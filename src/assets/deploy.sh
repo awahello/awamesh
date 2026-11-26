@@ -316,7 +316,7 @@ while read -r kind a b c _rest; do
           ;;
       esac
     done < /tmp/awa.state
-rm -f /tmp/awa.state
+# 保留 /tmp/awa.state 方便排查（每次覆盖，不占空间）
 PEERS
 printf '%s' "$IFACE" > /etc/wireguard/awa.iface
 chmod +x "$BINDIR/awa-peers"
