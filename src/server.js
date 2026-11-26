@@ -430,6 +430,14 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, r);
     }
 
+    if (p === "/api/join/peers.sh" && req.method === "GET") {
+      const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      // 校验凭据有效（无效就 401，节点侧会按 401 处理）
+      peersForNode(token);
+      res.writeHead(200, { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "no-store" });
+      return res.end(peersOnlyScript(req));
+    }
+
     if (p === "/api/join/state" && req.method === "GET") {
       const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
       const data = peersForNode(token);
@@ -690,6 +698,110 @@ function autoBackupOnce() {
   } catch (e) {
     log("[backup] 自动备份失败：" + e.message);
   }
+}
+
+
+/** 只装/修「对端同步」脚本：节点上已经有 awa.token 时用这个补，不用重装整条链路 */
+function peersOnlyScript(req) {
+  const base = publicBase(req);
+  return `#!/bin/sh
+# awamesh 对端同步脚本安装器（不动 WireGuard 接口，只补定时任务）
+set -u
+SERVER="${base}"
+TOKEN="$(cat /etc/wireguard/awa.token 2>/dev/null || true)"
+[ -n "$TOKEN" ] || { echo "找不到 /etc/wireguard/awa.token：这台不是 awamesh 节点，或凭据已被清掉" >&2; exit 1; }
+
+BINDIR=/usr/local/bin
+[ -d "$BINDIR" ] || { mkdir -p "$BINDIR" 2>/dev/null || true; }
+[ -d "$BINDIR" ] || BINDIR=/usr/bin
+[ -d "$BINDIR" ] || BINDIR=/tmp
+
+cat > "$BINDIR/awa-peers" <<PEERS
+#!/bin/sh
+SERVER="$SERVER"
+IFACE="awa0"
+[ -f /etc/wireguard/awa.iface ] && IFACE="\\$(cat /etc/wireguard/awa.iface)"
+TOKEN="\\$(cat /etc/wireguard/awa.token 2>/dev/null)" || exit 0
+[ -n "\\$TOKEN" ] || exit 0
+PUBIP="\\$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+TSIP="\\$(tailscale ip -4 2>/dev/null | head -1)"
+if [ -n "\\$PUBIP" ]; then
+  curl -fsS -X POST "\\$SERVER/api/join/hit" -H "Authorization: Bearer \\$TOKEN" \\\\
+    -H 'Content-Type: application/json' \\\\
+    -d "{\\"endpoint\\":\\"\\$PUBIP:\\$(wg show \\$IFACE listen-port 2>/dev/null || echo 51820)\\",\\"ts\\":\\"\\$TSIP\\"}" >/dev/null 2>&1 || true
+fi
+CODE="\\$(curl -sS -o /tmp/awa.state -w '%{http_code}' --max-time 10 \\\\
+  -H "Authorization: Bearer \\$TOKEN" "\\$SERVER/api/join/state?format=shell" 2>/dev/null || echo 000)"
+STRIKE="/etc/wireguard/awa.401"
+case "\\$CODE" in
+  200) : > "\\$STRIKE" 2>/dev/null || true ;;
+  401)
+    n=\\$(cat "\\$STRIKE" 2>/dev/null || echo 0); n=\\$((n + 1)); echo "\\$n" > "\\$STRIKE"
+    [ "\\$n" -lt 3 ] && { echo "awamesh: 401 (\\$n/3)，下一轮再确认" >&2; exit 0; }
+    command -v wg-quick >/dev/null 2>&1 && wg-quick down "\\$IFACE" >/dev/null 2>&1
+    if [ -f /etc/config/network ] && command -v uci >/dev/null 2>&1; then
+      uci -q delete network.awa0 >/dev/null 2>&1; uci -q delete network.wgawa0 >/dev/null 2>&1
+      uci -q delete firewall.awamesh >/dev/null 2>&1; uci commit network >/dev/null 2>&1
+      uci commit firewall >/dev/null 2>&1; /etc/init.d/network reload >/dev/null 2>&1
+    fi
+    rm -f /etc/wireguard/"\\$IFACE.conf" /etc/wireguard/awa.token /etc/wireguard/awa.401
+    rm -f /usr/local/bin/awa-peers /usr/bin/awa-peers
+    crontab -l 2>/dev/null | grep -v awa-peers | crontab - 2>/dev/null || true
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+while read -r kind a b c _rest; do
+  case "\\$kind" in
+    PEER)
+      if [ -n "\\$c" ] && [ "\\$c" != "-" ]; then
+        wg set "\\$IFACE" peer "\\$a" allowed-ips "\\$b" endpoint "\\$c" persistent-keepalive 25 2>/dev/null || true
+      else
+        wg set "\\$IFACE" peer "\\$a" allowed-ips "\\$b" persistent-keepalive 25 2>/dev/null || true
+      fi ;;
+    FLAG)
+      if [ "\\$a" = "forward" ] && [ "\\$b" = "1" ]; then
+        sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+      fi ;;
+  esac
+done < /tmp/awa.state
+rm -f /tmp/awa.state
+PEERS
+chmod +x "$BINDIR/awa-peers"
+echo "  ✓ 已写入 $BINDIR/awa-peers"
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  cat >/etc/systemd/system/awa-peers.service <<'EOF'
+[Unit]
+Description=awamesh peer sync
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=BINDIR_PLACEHOLDER/awa-peers
+EOF
+  cat >/etc/systemd/system/awa-peers.timer <<'EOF'
+[Unit]
+Description=awamesh peer sync timer
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+[Install]
+WantedBy=timers.target
+EOF
+  sed -i "s#BINDIR_PLACEHOLDER#$BINDIR#" /etc/systemd/system/awa-peers.service
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable --now awa-peers.timer >/dev/null 2>&1 || true
+  echo "  ✓ 已启用 awa-peers.timer（每 60 秒）"
+elif command -v crontab >/dev/null 2>&1; then
+  (crontab -l 2>/dev/null | grep -v awa-peers; echo "*/1 * * * * $BINDIR/awa-peers >/dev/null 2>&1") | crontab - 2>/dev/null || true
+  echo "  ✓ 已写入 crontab（每 60 秒）"
+fi
+
+echo "==> 立刻跑一次"
+"$BINDIR/awa-peers" >/dev/null 2>&1 || true
+echo "==> 当前对端"
+wg show 2>/dev/null | head -20
+`;
 }
 
 /** 内置中转：控制台本身就是星型转发点，不需要额外部署 */

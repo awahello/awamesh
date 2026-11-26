@@ -477,7 +477,12 @@ export function deployConfig(token, req) {
   if (!dev) throw Object.assign(new Error("部署凭据无效"), { status: 401 });
   if (dev.revoked_at) throw Object.assign(new Error("该设备已吊销"), { status: 401 });
   const peer = db.prepare("SELECT * FROM wg_peers WHERE device_id = ?").get(dev.id);
-  if (!peer?.private_key) throw Object.assign(new Error("该设备没有私钥（自助加入的节点请用 /join.sh）"), { status: 400 });
+  if (!peer?.private_key) {
+    throw Object.assign(
+      new Error("这台是用 join.sh 自助加入的（私钥只在它本机），不能用 /dp/ 重装。接口已经通了就只补同步脚本：TOKEN=$(cat /etc/wireguard/awa.token) && curl -fsSL -H \"Authorization: Bearer $TOKEN\" '<控制台>/api/join/peers.sh' | sh"),
+      { status: 400 }
+    );
+  }
 
   const bk = backend();
   const pf = (typeof bk.profile === "function") ? (bk.profile() || {}) : {};
