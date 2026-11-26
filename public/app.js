@@ -210,6 +210,9 @@ async function viewOverview(main, silent) {
 async function viewDevices(main) {
   const qs = new URLSearchParams({ filter: S.filter, q: S.q });
   const d = await api("/api/devices?" + qs);
+  // 设备页直接给出「为什么离线」的结论，不用翻日志
+  const chk = S.backend === "wg" ? await api("/api/wg/check").catch(() => null) : null;
+  const neverSeen = (d.devices || []).filter(x => !x.revoked_at && !x.last_seen).length;
   main.innerHTML = `
     <div class="head">
       <div><h1>设备</h1><div class="sub">${d.total} 台 · ${d.online} 在线 · ${d.relay} 台走中继</div></div>
@@ -223,6 +226,22 @@ async function viewDevices(main) {
       ${[["all", "全部"], ["online", "在线"], ["relay", "中继"], ["offline", "离线"]].map(([k, l]) =>
         `<button class="btn sm ${S.filter === k ? "primary" : ""}" data-filter="${k}">${l}</button>`).join("")}
     </div>
+    ${chk && !chk.managed ? `<div class="card" style="margin-bottom:12px;border-color:var(--bad)">
+      <b>控制台没有托管 awa0（这就是设备一直离线的直接原因）</b>
+      <div class="muted" style="margin-top:6px;font-size:11.5px">
+        没有服务端监听 UDP，节点发出的握手包收不到回包，面板读不到 handshake，所以永远显示离线。<br>
+        运行身份：uid=${esc(String(chk.uid ?? "?"))} · 接口：${esc(chk.iface || "awa0")}
+      </div>
+      <div class="code" style="margin-top:8px">cd /opt/awamesh && sed -i '/^    cap_add:/i\    privileged: true' docker-compose.yml && docker compose up -d --force-recreate</div>
+      <div class="muted" style="margin-top:6px;font-size:11.5px">改完去「设置」点「检测连通性」，看到「已接管 awa0」再回这一页。</div>
+    </div>` : chk && chk.managed && neverSeen > 0 ? `<div class="card" style="margin-bottom:12px;border-color:var(--warn)">
+      <b>接口已托管，但 ${neverSeen} 台设备一次握手都没成功</b>
+      <div class="muted" style="margin-top:6px;font-size:11.5px">
+        控制台这边在 udp ${esc(String(chk.listenPort || "?"))} 上监听，所以问题在「包到不了」：<br>
+        ① 云控制台安全列表放行 UDP ${esc(String(chk.listenPort || 51820))}<br>
+        ② 实例内执行 <span class="mono">iptables -I INPUT -p udp --dport ${esc(String(chk.listenPort || 51820))} -j ACCEPT</span>
+      </div>
+    </div>` : ""}
     ${d.total === 0 ? `<div class="card" style="margin-bottom:12px;border-color:var(--info)">
       <b>还没有设备</b><span class="muted"> · 点右上角「添加设备」生成一条授权命令，粘到 OpenWrt / Linux 上以 root 执行即可；四步图解在「设置 → 快速上手」。</span>
     </div>` : ""}
@@ -666,6 +685,15 @@ async function viewSettings(main) {
           WireGuard 走 UDP，UDP 被封（公司/酒店/校园网）时连不上。填一个 Tailscale authkey，
           节点部署时脚本会先试 WireGuard，20 秒握不上手就自动改走 443 的 DERP 兜底。
         </p>
+        <details class="guide">
+          <summary>怎么确认真的生效了？（3 个检查点）</summary>
+          <ol>
+            <li>这里：卡片标题从「未配置」变成 <b>已启用 tskey-au…</b> —— 说明 key 已入库</li>
+            <li>节点上（跑过部署命令的那台）：<code>tailscale status</code> 能看到 <code>100.x.y.z</code>，<code>tailscale ip -4</code> 有地址 → 已经加入网络</li>
+            <li>部署日志里出现 <code>尝试 Tailscale 兜底</code> + <code>Tailscale 地址 100.x</code> → 说明 WireGuard 确实没通、兜底被触发</li>
+          </ol>
+          <p class="g-note">注意：WireGuard 正常握手时**不会**装 Tailscale —— 它是备用路径，不是默认路径。想强行验证，可以在节点上先 <code>ip link set awa0 down</code> 再跑一次部署命令。</p>
+        </details>
         ${guideBox({
           title: "怎么拿到 authkey？（官方 3 步 / 自建 1 条命令）",
           steps: [

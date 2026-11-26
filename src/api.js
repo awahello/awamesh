@@ -1014,7 +1014,7 @@ ingress:
   }
 
   if (url.pathname === "/api/tunnels" && method === "GET") {
-    return { tunnels: listTunnels(), cfEnabled: !!cfg.cfToken };
+    return { tunnels: listTunnels(), cfEnabled: cfEnabled() };
   }
 
 
