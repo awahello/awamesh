@@ -136,6 +136,11 @@ export async function joinPeer(body) {
 
 
 /** 节点用 nodeToken 拉取全网 peer 列表，用于打全直连 */
+
+function rowMeshIp(r) {
+  return r.mesh_ip && String(r.mesh_ip).includes(".");
+}
+
 export function peersForNode(nodeToken) {
   const hash = crypto.createHash("SHA256").update(String(nodeToken || "")).digest("hex");
   const self = db.prepare("SELECT * FROM devices d WHERE d.node_token = ?").get(hash);
@@ -147,21 +152,34 @@ export function peersForNode(nodeToken) {
     FROM devices d JOIN wg_peers p ON p.device_id = d.id
     WHERE d.revoked_at IS NULL`).all();
 
-  // P2P 关闭（全局或单台）：不下发 /32 对端，流量自然会落到控制台的 10.88.0.0/24 上，
-  // 由控制台转发 —— 打洞总是失败的网络（对称 NAT / 代理）靠这个保证互通。
+  // P2P 关闭（全局或单台）时，仍然下发 /32 对端，但 endpoint 一律指向控制台自己 ——
+  // 这样节点上**已经装好的旧脚本**也会在下一轮把 endpoint 改对，不需要登机器重装脚本。
+  // 数据流：A → 控制台 → B（控制台需要 ip_forward=1，启动时自动开）。
   const p2pGlobal = setting("p2p") === "1";   // 默认关闭：保证所有设备互通，直连是可选优化
+  const hubEndpoint = (() => {
+    const pf = (() => { try { const bk = backend(); return bk.profile ? (bk.profile() || {}) : {}; } catch { return {}; } })();
+    const ep = String(pf.endpoint || "").trim();
+    if (ep) return ep;
+    const host = process.env.AWA_PUBLIC_HOST || "";
+    return host ? `${host}:${process.env.AWA_WG_PORT || setting("wg_port") || 51820}` : "";
+  })();
 
   const peers = rows
-    .filter(r => r.id !== self.id && p2pGlobal && r.p2p !== 0)
-    .map(r => ({
-      name: r.name,
-      address: r.mesh_ip,
-      publicKey: r.public_key,
-      allowed: allowedFor(r),
-      routes: splitRoutes(r.routes),
-      // 有公网 endpoint 的才给直连信息，其余由 hub 兜底
-      endpoint: r.endpoint ? (r.endpoint.includes(":") ? r.endpoint : `${r.endpoint}:${r.wg_port || 51820}`) : "",
-    }));
+    .filter(r => r.id !== self.id && (p2pGlobal && r.p2p !== 0 ? true : !!rowMeshIp(r)))
+    .map(r => {
+      const direct = p2pGlobal && r.p2p !== 0 && r.endpoint
+        ? (r.endpoint.includes(":") ? r.endpoint : `${r.endpoint}:${r.wg_port || 51820}`)
+        : "";
+      return {
+        name: r.name,
+        address: r.mesh_ip,
+        publicKey: r.public_key,
+        allowed: allowedFor(r),
+        routes: splitRoutes(r.routes),
+        // 直连可信就用直连地址，否则统一指向控制台（由它转发）
+        endpoint: direct || hubEndpoint || "",
+      };
+    });
 
   return {
     self: {
