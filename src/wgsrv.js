@@ -114,6 +114,14 @@ export const wg = {
     }
   },
 
+  /** 更新某对端的 allowed-ips（网关网段变化时用） */
+  async setAllowedIps(publicKey, list) {
+    if (!list) return;
+    try {
+      await this.sh("wg", ["set", this.iface, "peer", publicKey, "allowed-ips", list]);
+    } catch { /* ignore */ }
+  },
+
   async setEndpoint(publicKey, endpoint) {
     if (!endpoint) return;
     try {

@@ -81,6 +81,7 @@ const NAV = [
   ["overview", "概览"],
   ["devices", "设备"],
   ["relays", "中继节点"],
+  ["publish", "发布服务"],
   ["tunnels", "Cloudflare 隧道"],
   ["events", "事件"],
   ["settings", "设置"],
@@ -141,6 +142,7 @@ async function renderView(silent = false) {
     else if (S.view === "devices") await viewDevices(main);
     else if (S.view === "relays") await viewRelays(main);
     else if (S.view === "tunnels") await viewTunnels(main);
+    else if (S.view === "publish") await viewPublishPage(main);
     else if (S.view === "events") await viewEvents(main);
     else await viewSettings(main);
   } catch (err) {
@@ -337,6 +339,50 @@ async function viewDevices(main) {
 }
 
 
+
+/* ---------------- 设备配置（部署端集中改） ---------------- */
+function openEditDevice(dev) {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>配置 · ${esc(dev.name)}</h3>
+      <div class="sub">这些都在面板改，保存后 60 秒内自动下发到节点（Endpoint 除外，那项要重新部署）</div>
+      <label class="dim" style="font-size:11px">设备名</label>
+      <input id="eName" value="${esc(dev.name)}" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+      <label class="dim" style="font-size:11px">标签（逗号分隔，方便筛选）</label>
+      <input id="eTags" value="${esc((dev.tags || []).join(","))}" placeholder="home, sg" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+      <label class="dim" style="font-size:11px">发布的网段（网关角色用，多个网关不能重叠）</label>
+      <input id="eRoutes" value="${esc(dev.routes || "")}" placeholder="10.0.0.0/16, 192.168.1.0/24" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
+      <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><input type="checkbox" id="eP2P" ${dev.p2p !== 0 ? "checked" : ""}> 参与 P2P 直连（关掉则一律经控制台转发）</label>
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="EViaTs" ${dev.via_ts ? "checked" : ""}> 经 Tailscale 回连（无公网/不能开端口时）</label>
+      <div class="modal-actions">
+        <button class="btn" data-act="close">取消</button>
+        <button class="btn primary" data-act="save">保存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  mask.querySelector('[data-act="close"]').onclick = close;
+  mask.querySelector('[data-act="save"]').onclick = async () => {
+    try {
+      await api(`/api/devices/${encodeURIComponent(dev.id)}/edit`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: mask.querySelector("#eName").value.trim(),
+          tags: mask.querySelector("#eTags").value,
+          routes: mask.querySelector("#eRoutes").value,
+          p2p: mask.querySelector("#eP2P").checked,
+          viaTs: mask.querySelector("#EViaTs").checked,
+        }),
+      });
+      close(); toast("已保存（60 秒内生效）"); renderView();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
 /* ---------------- 设备「⋯」更多操作 ---------------- */
 function openMore(dev) {
   const mask = document.createElement("div");
@@ -346,6 +392,7 @@ function openMore(dev) {
       <h3>${esc(dev.name)}</h3>
       <div class="sub">${esc(dev.mesh_ip || "")} · ${esc((dev.roles || []).join(" + ") || "节点")}</div>
       <div style="display:grid;gap:8px">
+        <button class="btn" data-op="edit">编辑配置（名字/标签/网段/P2P/TS）</button>
         <button class="btn" data-op="roles">角色与网段</button>
         <button class="btn" data-op="publish">发布服务到域名</button>
         <button class="btn" data-op="rename">改名</button>
@@ -363,6 +410,7 @@ function openMore(dev) {
     b.onclick = async () => {
       const op = b.dataset.op;
       if (op === "close") return close();
+      if (op === "edit") { close(); return openEditDevice(dev); }
       if (op === "roles") { close(); return openRoles(dev); }
       if (op === "publish") { close(); return openPublish(dev); }
       if (op === "rename") {
@@ -810,6 +858,136 @@ function guideBox({ title, steps, notes = [], href, hrefText }) {
       ${notes.map(x => `<p class="g-note">${x}</p>`).join("")}
       ${href ? `<p class="g-note"><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(hrefText || href)} ↗</a></p>` : ""}
     </details>`;
+}
+
+
+/* ---------------- 发布服务（独立页：可跨设备选目标做负载/主备） ---------------- */
+async function viewPublishPage(main) {
+  const [devs, zones, tun] = await Promise.all([
+    api("/api/devices").catch(() => ({ devices: [] })),
+    api("/api/cf/zones").catch(() => ({ zones: [], hint: "" })),
+    api("/api/tunnels").catch(() => ({ tunnels: [], cfEnabled: false })),
+  ]);
+  const svc = (tun.tunnels || []).filter(t => t.source === "awamesh");
+
+  main.innerHTML = `
+    <div class="topbar">
+      <div><h1>发布服务</h1><div class="sub">把内网端口映射成域名 · 可跨设备选多个目标做负载或主备</div></div>
+      <div class="head-actions">
+        <button class="btn" data-act="gotoTun">隧道与连接器</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:grid;grid-template-columns:1.2fr 0.8fr;gap:12px">
+        <div><label class="dim" style="font-size:11px">设备（默认目标取它的 mesh 地址）</label>
+          <select id="pvDev" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text)">
+            ${(devs.devices || []).filter(d => !d.revoked_at).map(d => `<option value="${esc(d.id)}" data-ip="${esc(d.mesh_ip || "")}">${esc(d.name)} · ${esc(d.mesh_ip || "")}</option>`).join("") || '<option value="">（还没有设备）</option>'}
+          </select></div>
+        <div><label class="dim" style="font-size:11px">策略</label>
+          <select id="pvMode" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text)">
+            <option value="lb">负载均衡（多目标轮询）</option>
+            <option value="standby">主备（第一个为主，挂了自动切）</option>
+          </select></div>
+      </div>
+
+      <label class="dim" style="font-size:11px;display:block;margin-top:8px">目标地址（每行一个，可跨设备：10.88.0.2:8000 / 10.88.0.4:8000 / 10.0.0.109:8000）</label>
+      <textarea id="pvTargets" rows="3" placeholder="10.88.0.2:8000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text);font-family:var(--mono);font-size:12px"></textarea>
+
+      <div style="display:grid;grid-template-columns:1.2fr 1fr 0.6fr;gap:10px;margin-top:8px">
+        <div><label class="dim" style="font-size:11px">根域名</label>
+          <select id="pvZone" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text)">
+            ${(zones.zones || []).map(z => `<option value="${esc(z.name)}">${esc(z.name)}</option>`).join("") || `<option value="">${esc(zones.hint || "读不到域名")}</option>`}
+          </select></div>
+        <div><label class="dim" style="font-size:11px">子域名</label>
+          <input id="pvSub" placeholder="nas" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+        <div><label class="dim" style="font-size:11px">端口</label>
+          <input id="pvPort" placeholder="8000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+      </div>
+
+      <div class="mono dim" id="pvPreview" style="font-size:11px;margin:6px 0"></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn primary" id="pvGo">发布到 Cloudflare</button>
+        <button class="btn" id="pvProbe">探活所有服务</button>
+      </div>
+      <div id="pvOut"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><b>已发布（部署端）</b><span>${svc.length} 条</span></div>
+      <div class="rows">
+        <div class="row head" style="grid-template-columns:1.6fr 2fr 0.9fr 0.7fr 0.5fr"><div>域名</div><div>目标</div><div>策略</div><div>状态</div><div></div></div>
+        ${svc.map(t => `
+          <div class="row" style="grid-template-columns:1.6fr 2fr 0.9fr 0.7fr 0.5fr">
+            <div class="cell mono" style="font-size:12px">${esc(t.hostname)}</div>
+            <div class="cell mono dim" style="font-size:11px">${esc(t.backend || "")}</div>
+            <div class="cell dim" style="font-size:11px">${t.mode === "standby" ? "主备" : "负载均衡"}</div>
+            <div class="cell" style="font-size:12px"><span class="dot ${t.health === "ok" ? "ok" : t.health === "down" ? "bad" : "warn"}"></span> ${t.health === "ok" ? "正常" : t.health === "down" ? "后端不通" : "待检查"}</div>
+            <div style="text-align:right"><button class="btn sm danger" data-del="${esc(t.id)}">删除</button></div>
+          </div>`).join("") || `<div class="empty">还没有通过面板发布的服务</div>`}
+      </div>
+    </div>`;
+
+  const devSel = main.querySelector("#pvDev");
+  const targets = main.querySelector("#pvTargets");
+  const port = main.querySelector("#pvPort");
+  const sub = main.querySelector("#pvSub");
+  const zone = main.querySelector("#pvZone");
+
+  const fill = () => {
+    const ip = devSel.selectedOptions[0]?.dataset.ip || "10.88.0.x";
+    if (!targets.value.trim()) targets.value = `${ip}:${port.value.trim() || ""}`.replace(/:$/, "");
+  };
+  const preview = () => {
+    const list = targets.value.split(/[,\n]/).map(x => x.trim()).filter(Boolean);
+    const p = port.value.trim();
+    const z = zone.value;
+    const s2 = sub.value.trim();
+    const host = z ? (s2 ? `${s2}.${z}` : z) : "（先选根域名）";
+    main.querySelector("#pvPreview").textContent = `${host}  →  ${list.map(t => `http://${t.includes(":") ? t : t + ":" + (p || "端口")}`).join("  ·  ") || "（填目标）"}`;
+  };
+  devSel.onchange = () => { targets.value = ""; fill(); preview(); };
+  targets.oninput = preview; port.oninput = preview; sub.oninput = preview; zone.onchange = preview;
+  fill(); preview();
+
+  main.querySelector('[data-act="gotoTun"]').onclick = () => { S.view = "tunnels"; render(); };
+  main.querySelector("#pvProbe").onclick = async () => {
+    try { await api("/api/tunnels/probe", { method: "POST", body: "{}" }); toast("已探活"); render(); }
+    catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#pvGo").onclick = async () => {
+    const out = main.querySelector("#pvOut");
+    const list = targets.value.split(/[,\n]/).map(x => x.trim()).filter(Boolean);
+    const p = port.value.trim();
+    const z = zone.value, s2 = sub.value.trim();
+    if (!list.length) return toast("填目标地址", true);
+    if (!z) return toast("先选根域名", true);
+    if (!p) return toast("填端口", true);
+    const host = s2 ? `${s2}.${z}` : z;
+    const backends = list.map(t => `http://${t.includes(":") ? t : t + ":" + p}`).join(", ");
+    out.innerHTML = '<div class="dim" style="font-size:11px;margin-top:8px">发布中…</div>';
+    try {
+      const r = await api("/api/tunnels/publish", { method: "POST", body: JSON.stringify({ hostname: host, backend: backends, mode: main.querySelector("#pvMode").value }) });
+      out.innerHTML = `<div style="font-size:12px;margin-top:8px;line-height:1.8">
+        <div>域名：<span class="mono">${esc(r.hostname)}</span></div>
+        <div>目标：<span class="mono">${esc((r.targets || []).join("  ·  "))}</span></div>
+        <div>隧道：<span class="mono">${esc(r.tunnelName)}</span>（${esc(r.pickedReason || "")}）</div>
+        <div>DNS：${r.dns === "ok" ? '<span style="color:var(--ok)">已指向 Cloudflare</span>' : '<span style="color:var(--bad)">' + esc(r.dnsError || "未修改") + "</span>"}</div>
+        <div>连接器：${r.connector && r.connector.running ? (r.connector.connected ? '<span style="color:var(--ok)">已连接</span>' : '<span style="color:var(--warn)">已启动待握手</span>') : '<span style="color:var(--bad)">未运行</span>'}</div>
+      </div>`;
+      toast("已发布 " + r.hostname);
+      setTimeout(render, 800);
+    } catch (e) { out.innerHTML = `<div style="color:var(--bad);font-size:12px;margin-top:8px">${esc(e.message)}</div>`; }
+  };
+  main.querySelectorAll("[data-del]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm("从面板移除，并摘掉该域名的 ingress 与 DNS？")) return;
+      try {
+        const r = await api(`/api/tunnels/${encodeURIComponent(b.dataset.del)}/delete`, { method: "POST", body: "{}" });
+        toast(r.dnsRemoved ? "已删除（含 DNS）" : "已删除"); render();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
 }
 
 /* ---------------- 设置 ---------------- */
@@ -1388,6 +1566,7 @@ async function openKeyModal() {
   const onKey = (e) => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
+  mask.querySelector('[data-act="win"]').onclick = () => { mask.remove(); openWgCreate(); };
   mask.querySelector('[data-act="gen"]').onclick = async () => {
     try {
       const r = await api("/api/keys", {
@@ -1404,6 +1583,7 @@ async function openKeyModal() {
           <button class="btn sm" id="kWin">Windows / 手机 / 路由器 → 生成可导入的配置</button>
         </div>`;
       mask.querySelector('[data-act="gen"]').textContent = "再生成一个";
+        mask.querySelector('[data-act="win"]').onclick = () => { mask.remove(); openWgCreate(); };
       mask.querySelector("#kWin").onclick = (ev) => { ev.preventDefault(); mask.remove(); openWgCreate(); };
     } catch (e) { toast(e.message, true); }
   };
@@ -1422,6 +1602,7 @@ async function openWgCreate() {
       <div id="wgOut"></div>
       <div class="modal-actions">
         <button class="btn" data-act="close">关闭</button>
+        <button class="btn" data-act="win">Windows / 手机 / 路由器</button>
         <button class="btn primary" data-act="gen">生成</button>
       </div>
     </div>`;
@@ -1762,6 +1943,7 @@ async function openJoinCommand() {
   const onKey = (e) => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
+  mask.querySelector('[data-act="win"]').onclick = () => { mask.remove(); openWgCreate(); };
   mask.querySelector('[data-act="gen"]').onclick = async () => {
     try {
       const r = await api("/api/keys", {

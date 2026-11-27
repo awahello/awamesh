@@ -1330,6 +1330,45 @@ ingress:
     return { ok: true, viaTs: on, tsIp: dev.ts_ip || "" };
   }
 
+
+  // 设备编辑：名字 / 标签 / 网段 / P2P / Tailscale 回连 都在部署端改
+  if (seg[0] === "devices" && seg[2] === "edit" && method === "POST") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+
+    if (body?.name) {
+      const name = String(body.name).trim().slice(0, 60);
+      if (name) db.prepare("UPDATE devices SET name = ? WHERE id = ?").run(name, dev.id);
+    }
+    if (body?.tags !== undefined) {
+      const tags = (Array.isArray(body.tags) ? body.tags : String(body.tags || "").split(/[,，\s]+/))
+        .map(x => String(x).trim()).filter(Boolean).slice(0, 8);
+      db.prepare("UPDATE devices SET tags = ? WHERE id = ?").run(tags.join(","), dev.id);
+    }
+    if (body?.routes !== undefined) {
+      const routes = splitRoutes(body.routes).filter(c => /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(c));
+      // 多个网关：网段不能和别的设备重叠
+      for (const c of routes) {
+        const clash = db.prepare("SELECT name, routes FROM devices WHERE id != ? AND revoked_at IS NULL").all()
+          .find(o => splitRoutes(o.routes).includes(c));
+        if (clash) throw new Error(`网段 ${c} 已被「${clash.name}」发布，多个网关的网段不能重叠`);
+      }
+      db.prepare("UPDATE devices SET routes = ? WHERE id = ?").run(routes.join(","), dev.id);
+      const peer = db.prepare("SELECT * FROM wg_peers WHERE device_id = ?").get(dev.id);
+      if (isManaged() && peer?.public_key) {
+        try { await wg.setAllowedIps(peer.public_key, allowedFor({ ...dev, routes: routes.join(",") })); } catch { /* ignore */ }
+      }
+    }
+    if (body?.p2p !== undefined) {
+      db.prepare("UPDATE devices SET p2p = ? WHERE id = ?").run(body.p2p ? 1 : 0, dev.id);
+    }
+    if (body?.viaTs !== undefined) {
+      db.prepare("UPDATE devices SET via_ts = ? WHERE id = ?").run(body.viaTs ? 1 : 0, dev.id);
+    }
+    addEvent("device", `更新设备配置 ${dev.name}`, dev.id);
+    return { ok: true };
+  }
+
   if (seg[0] === "devices" && seg[2] === "uninstall" && method === "GET") {
     const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
     if (!dev) throw new Error("设备不存在");
