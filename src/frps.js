@@ -40,23 +40,41 @@ function writeConfig({ port, token, rangeStart, rangeEnd }) {
   state.cfg = { port, token, rangeStart, rangeEnd };
 }
 
-function resolveBin() {
+async function resolveBin() {
   for (const c of ["frps", "/usr/local/bin/frps", "/data/bin/frps"]) {
     try {
       const v = execFileSync(c, ["--version"], { timeout: 4000 }).toString().trim();
       if (v) return { bin: c, version: v };
     } catch { /* next */ }
   }
-  throw new Error("镜像里没有 frps（旧镜像？升级到 0.9.1+）");
+
+  // 镜像里那个架构不对（arm64 机器上放了 amd64）→ 运行时按 process.arch 重下
+  const arch = process.arch === "arm64" ? "arm64" : "amd64";
+  const ver = "0.61.1";
+  const url = `https://github.com/fatedier/frp/releases/download/v${ver}/frp_${ver}_linux_${arch}.tar.gz`;
+  const tgz = "/tmp/frp-dl.tgz";
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`下载 frp 失败：HTTP ${r.status}`);
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length < 1_000_000) throw new Error(`下载的 frp 太小（${buf.length} B）`);
+  fs.writeFileSync(tgz, buf);
+  fs.mkdirSync("/data/bin", { recursive: true });
+  execFileSync("tar", ["-xzf", tgz, "-C", "/tmp"], { timeout: 15000 });
+  const dir = fs.readdirSync("/tmp").find(d => d.startsWith("frp_") && fs.statSync(`/tmp/${d}`).isDirectory());
+  if (!dir) throw new Error("解包 frp 失败");
+  fs.copyFileSync(`/tmp/${dir}/frps`, "/data/bin/frps");
+  fs.chmodSync("/data/bin/frps", 0o755);
+  const v = execFileSync("/data/bin/frps", ["--version"], { timeout: 5000 }).toString().trim();
+  return { bin: "/data/bin/frps", version: v, downloaded: true };
 }
 
-export function startFrps(opts) {
+export async function startFrps(opts) {
   if (state.proc) return { running: true, reused: true };
   const cfg = { ...frpsConfig(), ...(opts || {}) };
   if (!cfg.token) cfg.token = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
   writeConfig(cfg);
 
-  const { bin, version } = resolveBin();
+  const { bin, version } = await resolveBin();
   push(`[bin] ${bin} · ${version}`);
   const p = spawn(bin, ["-c", CONF], { stdio: ["ignore", "pipe", "pipe"] });
   state.proc = p;

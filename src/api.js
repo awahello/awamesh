@@ -914,7 +914,7 @@ export async function api(req, res, url, body) {
     const act = String(body?.action || "");
     if (act === "stop") return stopFrps();
     try {
-      const r = startFrps({
+      const r = await startFrps({
         port: Number(body?.port) || undefined,
         token: String(body?.token || "").trim() || undefined,
         rangeStart: Number(body?.rangeStart) || undefined,
