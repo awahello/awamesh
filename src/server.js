@@ -448,6 +448,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/tunnel/connector" && req.method === "POST") {
+      const body = await readBody(req);
       const act = String(body?.action || "");
       if (act === "stop") return json(res, 200, cfStop());
       const token = String(body?.token || "").trim() || secretSetting("cf_tunnel_token", "");
