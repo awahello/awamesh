@@ -868,45 +868,51 @@ async function viewPublishPage(main) {
     api("/api/cf/zones").catch(() => ({ zones: [], hint: "" })),
     api("/api/tunnels").catch(() => ({ tunnels: [], cfEnabled: false })),
   ]);
+  const list = (devs.devices || []).filter(d => !d.revoked_at);
   const svc = (tun.tunnels || []).filter(t => t.source === "awamesh");
 
   main.innerHTML = `
     <div class="topbar">
-      <div><h1>发布服务</h1><div class="sub">把内网端口映射成域名 · 可跨设备选多个目标做负载或主备</div></div>
-      <div class="head-actions">
-        <button class="btn" data-act="gotoTun">隧道与连接器</button>
-      </div>
+      <div><h1>发布服务</h1><div class="sub">目标可以是不同设备上的端口 —— 勾几台就是几台，做负载或主备</div></div>
+      <div class="head-actions"><button class="btn" data-act="gotoTun">隧道与连接器</button></div>
     </div>
 
     <div class="card" style="margin-bottom:12px">
-      <div style="display:grid;grid-template-columns:1.2fr 0.8fr;gap:12px">
-        <div><label class="dim" style="font-size:11px">设备（默认目标取它的 mesh 地址）</label>
-          <select id="pvDev" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text)">
-            ${(devs.devices || []).filter(d => !d.revoked_at).map(d => `<option value="${esc(d.id)}" data-ip="${esc(d.mesh_ip || "")}">${esc(d.name)} · ${esc(d.mesh_ip || "")}</option>`).join("") || '<option value="">（还没有设备）</option>'}
-          </select></div>
-        <div><label class="dim" style="font-size:11px">策略</label>
-          <select id="pvMode" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text)">
-            <option value="lb">负载均衡（多目标轮询）</option>
-            <option value="standby">主备（第一个为主，挂了自动切）</option>
-          </select></div>
+      <label class="dim" style="font-size:11px">选目标（勾选设备 → 填端口；「地址」可改成该设备内网的 IP，比如 10.0.0.109）</label>
+      <div class="rows" style="margin:6px 0 10px">
+        <div class="row head" style="grid-template-columns:36px 1.2fr 1.3fr 0.6fr"><div></div><div>设备</div><div>地址（默认 mesh IP）</div><div>端口</div></div>
+        ${list.map((d, i) => `
+          <div class="row" style="grid-template-columns:36px 1.2fr 1.3fr 0.6fr">
+            <div class="cell"><input type="checkbox" class="pvPick" data-i="${i}" ${i === 0 ? "checked" : ""}></div>
+            <div class="cell"><b>${esc(d.name)}</b> <span class="dim mono" style="font-size:11px">${esc(d.mesh_ip || "")}</span></div>
+            <div class="cell"><input class="pvIp" data-i="${i}" value="${esc(d.mesh_ip || "")}" style="width:100%;padding:4px 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-family:var(--mono);font-size:11.5px"></div>
+            <div class="cell"><input class="pvPort" data-i="${i}" placeholder="8000" style="width:100%;padding:4px 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:11.5px"></div>
+          </div>`).join("") || `<div class="empty">还没有设备</div>`}
       </div>
 
-      <label class="dim" style="font-size:11px;display:block;margin-top:8px">目标地址（每行一个，可跨设备：10.88.0.2:8000 / 10.88.0.4:8000 / 10.0.0.109:8000）</label>
-      <textarea id="pvTargets" rows="3" placeholder="10.88.0.2:8000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text);font-family:var(--mono);font-size:12px"></textarea>
+      <label class="dim" style="font-size:11px">额外目标（每行一个，可选）</label>
+      <textarea id="pvExtra" rows="2" placeholder="10.0.0.109:8000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text);font-family:var(--mono);font-size:12px"></textarea>
 
-      <div style="display:grid;grid-template-columns:1.2fr 1fr 0.6fr;gap:10px;margin-top:8px">
+      <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:10px;margin-top:8px">
         <div><label class="dim" style="font-size:11px">根域名</label>
           <select id="pvZone" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text)">
             ${(zones.zones || []).map(z => `<option value="${esc(z.name)}">${esc(z.name)}</option>`).join("") || `<option value="">${esc(zones.hint || "读不到域名")}</option>`}
           </select></div>
         <div><label class="dim" style="font-size:11px">子域名</label>
           <input id="pvSub" placeholder="nas" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
-        <div><label class="dim" style="font-size:11px">端口</label>
-          <input id="pvPort" placeholder="8000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
       </div>
 
-      <div class="mono dim" id="pvPreview" style="font-size:11px;margin:6px 0"></div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px">
+        <label class="dim" style="font-size:11px;display:flex;gap:6px;align-items:center">策略
+          <select id="pvMode" style="padding:4px 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text)">
+            <option value="lb">负载均衡（轮询）</option>
+            <option value="standby">主备（挂了自动切）</option>
+          </select>
+        </label>
+        <span class="mono dim" id="pvPreview" style="font-size:11px"></span>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:10px">
         <button class="btn primary" id="pvGo">发布到 Cloudflare</button>
         <button class="btn" id="pvProbe">探活所有服务</button>
       </div>
@@ -928,27 +934,27 @@ async function viewPublishPage(main) {
       </div>
     </div>`;
 
-  const devSel = main.querySelector("#pvDev");
-  const targets = main.querySelector("#pvTargets");
-  const port = main.querySelector("#pvPort");
-  const sub = main.querySelector("#pvSub");
-  const zone = main.querySelector("#pvZone");
+  const collect = () => {
+    const out = [];
+    main.querySelectorAll(".pvPick").forEach(cb => {
+      if (!cb.checked) return;
+      const i = cb.dataset.i;
+      const ip = (main.querySelector(`.pvIp[data-i="${i}"]`).value || "").trim();
+      const port = (main.querySelector(`.pvPort[data-i="${i}"]`).value || "").trim();
+      if (ip && port) out.push(`${ip}:${port}`);
+    });
+    (main.querySelector("#pvExtra").value || "").split(/[,\n]/).map(x => x.trim()).filter(Boolean).forEach(x => out.push(x));
+    return out;
+  };
 
-  const fill = () => {
-    const ip = devSel.selectedOptions[0]?.dataset.ip || "10.88.0.x";
-    if (!targets.value.trim()) targets.value = `${ip}:${port.value.trim() || ""}`.replace(/:$/, "");
-  };
   const preview = () => {
-    const list = targets.value.split(/[,\n]/).map(x => x.trim()).filter(Boolean);
-    const p = port.value.trim();
-    const z = zone.value;
-    const s2 = sub.value.trim();
-    const host = z ? (s2 ? `${s2}.${z}` : z) : "（先选根域名）";
-    main.querySelector("#pvPreview").textContent = `${host}  →  ${list.map(t => `http://${t.includes(":") ? t : t + ":" + (p || "端口")}`).join("  ·  ") || "（填目标）"}`;
+    const z = main.querySelector("#pvZone").value;
+    const sub = main.querySelector("#pvSub").value.trim();
+    const host = z ? (sub ? `${sub}.${z}` : z) : "（先选根域名）";
+    const ts = collect();
+    main.querySelector("#pvPreview").textContent = `${host}  →  ${ts.length ? ts.map(t => `http://${t}`).join("  ·  ") : "（至少勾一台并填端口）"}`;
   };
-  devSel.onchange = () => { targets.value = ""; fill(); preview(); };
-  targets.oninput = preview; port.oninput = preview; sub.oninput = preview; zone.onchange = preview;
-  fill(); preview();
+  main.querySelectorAll("input").forEach(i => { i.oninput = preview; i.onchange = preview; });
 
   main.querySelector('[data-act="gotoTun"]').onclick = () => { S.view = "tunnels"; render(); };
   main.querySelector("#pvProbe").onclick = async () => {
@@ -957,17 +963,19 @@ async function viewPublishPage(main) {
   };
   main.querySelector("#pvGo").onclick = async () => {
     const out = main.querySelector("#pvOut");
-    const list = targets.value.split(/[,\n]/).map(x => x.trim()).filter(Boolean);
-    const p = port.value.trim();
-    const z = zone.value, s2 = sub.value.trim();
-    if (!list.length) return toast("填目标地址", true);
+    const targets = collect();
+    const z = main.querySelector("#pvZone").value;
+    const sub = main.querySelector("#pvSub").value.trim();
+    if (!targets.length) return toast("至少勾一台并填端口", true);
     if (!z) return toast("先选根域名", true);
-    if (!p) return toast("填端口", true);
-    const host = s2 ? `${s2}.${z}` : z;
-    const backends = list.map(t => `http://${t.includes(":") ? t : t + ":" + p}`).join(", ");
+    const host = sub ? `${sub}.${z}` : z;
     out.innerHTML = '<div class="dim" style="font-size:11px;margin-top:8px">发布中…</div>';
     try {
-      const r = await api("/api/tunnels/publish", { method: "POST", body: JSON.stringify({ hostname: host, backend: backends, mode: main.querySelector("#pvMode").value }) });
+      const r = await api("/api/tunnels/publish", { method: "POST", body: JSON.stringify({
+        hostname: host,
+        backend: targets.map(t => `http://${t}`).join(", "),
+        mode: main.querySelector("#pvMode").value,
+      })});
       out.innerHTML = `<div style="font-size:12px;margin-top:8px;line-height:1.8">
         <div>域名：<span class="mono">${esc(r.hostname)}</span></div>
         <div>目标：<span class="mono">${esc((r.targets || []).join("  ·  "))}</span></div>
@@ -976,7 +984,7 @@ async function viewPublishPage(main) {
         <div>连接器：${r.connector && r.connector.running ? (r.connector.connected ? '<span style="color:var(--ok)">已连接</span>' : '<span style="color:var(--warn)">已启动待握手</span>') : '<span style="color:var(--bad)">未运行</span>'}</div>
       </div>`;
       toast("已发布 " + r.hostname);
-      setTimeout(render, 800);
+      setTimeout(render, 900);
     } catch (e) { out.innerHTML = `<div style="color:var(--bad);font-size:12px;margin-top:8px">${esc(e.message)}</div>`; }
   };
   main.querySelectorAll("[data-del]").forEach(b => {
@@ -988,6 +996,7 @@ async function viewPublishPage(main) {
       } catch (e) { toast(e.message, true); }
     };
   });
+  preview();
 }
 
 /* ---------------- 设置 ---------------- */
