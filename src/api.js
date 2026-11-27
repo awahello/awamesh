@@ -291,6 +291,44 @@ export async function meshHeal() {
   return { ipForward: val("/proc/sys/net/ipv4/ip_forward"), policy, steps };
 }
 
+
+/** 从容器内探活每条隧道的后端（TCP 连接），把「待检查」变成真实状态 */
+export async function probeTunnels() {
+  const net = await import("node:net");
+  const rows = db.prepare("SELECT * FROM tunnels").all();
+  const t = now();
+  const result = [];
+
+  const tryOne = (backend) => new Promise((resolve) => {
+    const hostport = String(backend || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    const i = hostport.lastIndexOf(":");
+    if (i < 1) return resolve({ ok: false, why: "地址格式不对" });
+    const host = hostport.slice(0, i).replace(/^\[|\]$/g, "");
+    const port = Number(hostport.slice(i + 1));
+    if (!port) return resolve({ ok: false, why: "端口不对" });
+    const sock = new net.Socket();
+    let done = false;
+    const finish = (ok, why) => {
+      if (done) return; done = true;
+      try { sock.destroy(); } catch {}
+      resolve({ ok, why: why || "" });
+    };
+    sock.setTimeout(2500);
+    sock.once("connect", () => finish(true));
+    sock.once("timeout", () => finish(false, "超时"));
+    sock.once("error", (e) => finish(false, e.code || e.message));
+    sock.connect(port, host);
+  });
+
+  for (const r of rows) {
+    const res = await tryOne(r.backend);
+    db.prepare("UPDATE tunnels SET health = ?, last_check = ? WHERE id = ?")
+      .run(res.ok ? "ok" : "down", t, r.id);
+    result.push({ hostname: r.hostname, backend: r.backend, ok: res.ok, why: res.why });
+  }
+  return { checked: result.length, results: result, at: t };
+}
+
 /** 从容器内逐个 ping mesh 地址，并把 ip_forward 一起报出来（面板自检用） */
 export async function meshSelftest() {
   const { execFile } = await import("node:child_process");
@@ -863,6 +901,10 @@ export async function api(req, res, url, body) {
 
   if (url.pathname === "/api/mesh/heal" && method === "POST") {
     return meshHeal();
+  }
+
+  if (url.pathname === "/api/tunnels/probe" && method === "POST") {
+    return probeTunnels();
   }
 
   if (url.pathname === "/api/wg/selftest" && method === "POST") {

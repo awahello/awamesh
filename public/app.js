@@ -490,6 +490,20 @@ async function viewTunnels(main) {
       </div>
       <p class="dim" style="font-size:11px;margin:12px 0 0">v0.1 为只读同步；把 ingress 改指 mesh 地址与回滚在 v0.2 提供。</p>
     </div>`;
+  // 进页面自动探活一次：把「待检查」变成真实的后端连通性
+  (async () => {
+    try {
+      await api("/api/tunnels/probe", { method: "POST", body: "{}" });
+      const again = await api("/api/tunnels");
+      const rows = main.querySelectorAll(".rows .row:not(.head)");
+      (again.tunnels || []).forEach((t, i) => {
+        const cell = rows[i] && rows[i].children[2];
+        if (!cell) return;
+        cell.innerHTML = `<span class="dot ${t.health === "ok" ? "ok" : t.health === "down" ? "bad" : "warn"}"></span> ${t.health === "ok" ? "正常" : t.health === "down" ? "后端不通" : "待检查"}`;
+      });
+    } catch { /* 探活失败不打扰 */ }
+  })();
+
   main.querySelector('[data-act="refresh"]').onclick = renderView;
   main.querySelector('[data-act="add"]').onclick = openAddTunnel;
   const go = main.querySelector('[data-act="goSettings"]');
@@ -580,6 +594,20 @@ async function viewEvents(main) {
         </div>`).join("") || `<div class="empty">暂无事件</div>`}
       </div>
     </div>`;
+  // 进页面自动探活一次：把「待检查」变成真实的后端连通性
+  (async () => {
+    try {
+      await api("/api/tunnels/probe", { method: "POST", body: "{}" });
+      const again = await api("/api/tunnels");
+      const rows = main.querySelectorAll(".rows .row:not(.head)");
+      (again.tunnels || []).forEach((t, i) => {
+        const cell = rows[i] && rows[i].children[2];
+        if (!cell) return;
+        cell.innerHTML = `<span class="dot ${t.health === "ok" ? "ok" : t.health === "down" ? "bad" : "warn"}"></span> ${t.health === "ok" ? "正常" : t.health === "down" ? "后端不通" : "待检查"}`;
+      });
+    } catch { /* 探活失败不打扰 */ }
+  })();
+
   main.querySelector('[data-act="refresh"]').onclick = renderView;
 }
 
