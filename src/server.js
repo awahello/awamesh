@@ -455,7 +455,16 @@ const server = http.createServer(async (req, res) => {
       if (!token) return json(res, 400, { error: "没有 token：先「发布到 Cloudflare」，把弹层里的 token 粘进来" });
       if (body?.token) saveSecretSetting("cf_tunnel_token", token);
       cfStop();
-      const r = cfStart(token);
+      let bin = "cloudflared";
+      try {
+        const res = await resolveCloudflared();
+        bin = res.bin;
+        cfLog(`[bin] ${res.bin} · ${res.version}`);
+      } catch (e) {
+        cfLog("[bin] 准备 cloudflared 失败：" + e.message);
+        return json(res, 500, { error: e.message, ...cfStatus() });
+      }
+      const r = cfStart(token, bin);
       return json(res, 200, { ...r, ...cfStatus() });
     }
 
@@ -738,10 +747,34 @@ function cfLog(line) {
   if (cfRunner.lines.length > 120) cfRunner.lines.shift();
 }
 
-function cfStart(token) {
+/** 找一个能跑的 cloudflared：内置的 → /data/bin（运行时下载）→ 现场下载 */
+async function resolveCloudflared() {
+  const { execFileSync } = await import("node:child_process");
+  const candidates = ["cloudflared", "/usr/local/bin/cloudflared", "/data/bin/cloudflared"];
+  for (const c of candidates) {
+    try {
+      const v = execFileSync(c, ["--version"], { timeout: 3000 }).toString().trim();
+      if (v) return { bin: c, version: v };
+    } catch { /* 下一个 */ }
+  }
+  // 都不行：按当前架构下载到 /data/bin
+  const arch = process.arch === "arm64" ? "arm64" : "amd64";
+  const url = `https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}`;
+  fs.mkdirSync("/data/bin", { recursive: true });
+  const out = "/data/bin/cloudflared";
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`下载 cloudflared 失败：HTTP ${r.status}`);
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length < 1_000_000) throw new Error(`下载的 cloudflared 太小（${buf.length} B），可能是错误页`);
+  fs.writeFileSync(out, buf, { mode: 0o755 });
+  const v = execFileSync(out, ["--version"], { timeout: 5000 }).toString().trim();
+  return { bin: out, version: v };
+}
+
+function cfStart(token, bin) {
   if (cfRunner.proc) return { running: true };
   if (!token) return { running: false, error: "没有 token" };
-  const p = spawn("cloudflared", ["tunnel", "--no-autoupdate", "run", "--token", token], {
+  const p = spawn(bin || "cloudflared", ["tunnel", "--no-autoupdate", "run", "--token", token], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   cfRunner.proc = p;

@@ -251,6 +251,39 @@ function currentNodeToken(dev, prefix = "nt_") {
 }
 
 
+
+/** 一键修复 mesh 互通：写转发开关 + 放行 FORWARD + 回读实际值 */
+export async function meshHeal() {
+  const fsMod = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const steps = [];
+  const val = (k) => { try { return fsMod.readFileSync(k, "utf8").trim(); } catch { return "?"; } };
+
+  for (const k of ["/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv4/conf/all/forwarding"]) {
+    if (val(k) === "1") { steps.push(`${k} 已是 1`); continue; }
+    try { fsMod.writeFileSync(k, "1"); steps.push(`${k} → ${val(k)}`); }
+    catch (e) { steps.push(`${k} 写入失败：${e.message}`); }
+  }
+
+  const rules = [
+    ["-P", "FORWARD", "ACCEPT"],
+    ["-I", "FORWARD", "-i", "awa0", "-o", "awa0", "-j", "ACCEPT"],
+  ];
+  for (const r of rules) {
+    try { execFileSync("iptables", r, { timeout: 3000 }); steps.push(`iptables ${r.join(" ")} ✓`); }
+    catch (e) { steps.push(`iptables ${r.join(" ")} 失败：${e.message}`); }
+  }
+
+  let policy = "?";
+  try {
+    const out = execFileSync("iptables", ["-S", "FORWARD"], { timeout: 3000 }).toString();
+    policy = out.split("\n")[0] || "?";
+  } catch { policy = "?"; }
+
+  addEvent("system", "执行 mesh 互通修复");
+  return { ipForward: val("/proc/sys/net/ipv4/ip_forward"), policy, steps };
+}
+
 /** 从容器内逐个 ping mesh 地址，并把 ip_forward 一起报出来（面板自检用） */
 export async function meshSelftest() {
   const { execFile } = await import("node:child_process");
@@ -819,6 +852,10 @@ export async function api(req, res, url, body) {
     rotateSessions();
     addEvent("auth", "后台口令已修改，所有会话失效");
     return { ok: true };
+  }
+
+  if (url.pathname === "/api/mesh/heal" && method === "POST") {
+    return meshHeal();
   }
 
   if (url.pathname === "/api/wg/selftest" && method === "POST") {
