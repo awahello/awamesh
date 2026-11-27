@@ -1,7 +1,7 @@
 import { cfg } from "./config.js";
 import { db, now, setting, listRelays, listTunnels, listEvents, addEvent } from "./db.js";
 import { backend } from "./backends/index.js";
-import { cfApi as cf, cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows, ensureTunnel, publishIngress, zoneFor, pointDns, tunnelToken, listZones } from "./cloudflare.js";
+import { cfApi as cf, cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows, ensureTunnel, pickTunnel, publishIngress, zoneFor, pointDns, tunnelToken, listZones } from "./cloudflare.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { wg, isManaged } from "./wgsrv.js";
@@ -1335,7 +1335,7 @@ ingress:
 
     // 全站共用一个隧道：默认叫 awamesh，可在设置里改成你已有的隧道名（不会新建第二个）
     const tunnelName = String(body?.tunnelName || setting("cf_tunnel_name") || "awamesh").trim();
-    const tun = await ensureTunnel(account, tunnelName);
+    const tun = await pickTunnel(account, tunnelName);
     const rules = await publishIngress(account, tun.id, hostname, backend);
 
     let dns = "skipped";
@@ -1359,7 +1359,8 @@ ingress:
 
     // 用内置连接器：发布即启动，不用再装第二个 cloudflared
     let connector = connectorStatus();
-    if (token && !connector.running) {
+    const alreadyConnected = (tun.connections || []).length > 0;
+    if (token && !alreadyConnected && !connector.running) {
       try {
         await startConnector(token);
         saveSecretSetting("cf_tunnel_token", token);
@@ -1384,7 +1385,7 @@ ingress:
           `    command: tunnel --no-autoupdate run --token ${token}`,
         ].join("\n")
       : "";
-    return { ok: true, tunnelId: tun.id, tunnelName: tun.name, hostname, backend, ingress: rules, dns, dnsError, command, compose, tokenAvailable: !!token, connector };
+    return { ok: true, tunnelId: tun.id, tunnelName: tun.name, pickedReason: tun.pickedReason || "", hostname, backend, ingress: rules, dns, dnsError, command, compose, tokenAvailable: !!token, connector };
   }
 
   if (url.pathname === "/api/tunnels/sync" && method === "POST") {

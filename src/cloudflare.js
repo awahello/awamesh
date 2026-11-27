@@ -54,6 +54,24 @@ export async function cfApi(path, init) {
   return cf(path, init);
 }
 
+/**
+ * 选一条隧道来用：优先「已经有连接器的」→ 再按名字找 → 最后才新建。
+ * 这样你把 token 粘给某条已有隧道后，发布就直接复用那条，不会出现
+ * 「awamesh 隧道非活动 / mesh 隧道健康」这种两边对不上的情况。
+ */
+export async function pickTunnel(accountId, preferName = "awamesh") {
+  const list = (await cf(`/accounts/${accountId}/cfd_tunnel?is_deleted=false&per_page=50`)) || [];
+  const active = list.filter(t => (t.connections || []).length > 0);
+  if (active.length) return { ...active[0], pickedReason: "已连接" };
+  const byName = list.find(t => t.name === preferName);
+  if (byName) return { ...byName, pickedReason: "同名" };
+  const created = await cf(`/accounts/${accountId}/cfd_tunnel`, {
+    method: "POST",
+    body: JSON.stringify({ name: preferName, config_src: "cloudflare" }),
+  });
+  return { ...created, pickedReason: "新建" };
+}
+
 /** 找一个同名隧道，没有就建一个（需要 Account → Cloudflare Tunnel → Write） */
 export async function ensureTunnel(accountId, name = "awamesh") {
   const list = (await cf(`/accounts/${accountId}/cfd_tunnel?is_deleted=false&per_page=50`)) || [];
