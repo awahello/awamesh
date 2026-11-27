@@ -1,7 +1,7 @@
 import { cfg } from "./config.js";
 import { db, now, setting, listRelays, listTunnels, listEvents, addEvent } from "./db.js";
 import { backend } from "./backends/index.js";
-import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows, ensureTunnel, publishIngress, zoneFor, pointDns, tunnelToken } from "./cloudflare.js";
+import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows, ensureTunnel, publishIngress, zoneFor, pointDns, tunnelToken, listZones } from "./cloudflare.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { wg, isManaged } from "./wgsrv.js";
@@ -1161,6 +1161,12 @@ ingress:
     }
     if (body?.account !== undefined) setCfAccount(String(body.account).trim());
     return { ok: true, enabled: cfEnabled(), account: cfAccount() };
+  }
+
+  if (url.pathname === "/api/cf/zones" && method === "GET") {
+    if (!cfEnabled()) return { zones: [], hint: "还没配 Token" };
+    const zones = await listZones().catch(() => []);
+    return { zones, hint: zones.length ? "" : "Token 需要 Zone → Zone → Read 才能列域名" };
   }
 
   if (url.pathname === "/api/cf/test" && method === "POST") {

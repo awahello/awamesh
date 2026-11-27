@@ -75,6 +75,12 @@ export async function publishIngress(accountId, tunnelId, hostname, backend) {
   return rules;
 }
 
+/** 列账户下的 zone（需要 Zone → Zone → Read） */
+export async function listZones() {
+  const zones = await cf("/zones?per_page=50").catch(() => []);
+  return (zones || []).map(z => ({ id: z.id, name: z.name, status: z.status }));
+}
+
 /** 从最长的后缀开始找这个域名属于哪个 zone */
 export async function zoneFor(hostname) {
   const parts = String(hostname).split(".");

@@ -1202,17 +1202,22 @@ function openPublish(dev) {
   mask.innerHTML = `
     <div class="modal">
       <h3>发布服务 · ${esc(dev.name)}</h3>
-      <div class="sub">把这台 ${esc(dev.mesh_ip || "mesh 地址")} 的某个端口，经 Cloudflare 隧道映射成域名（不需要公网 IP、不开入站）</div>
-      <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px">
-        <div><label class="dim" style="font-size:11px">域名</label>
-          <input id="pHost" placeholder="nas.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+      <div class="sub">把这台 ${esc(dev.mesh_ip || "mesh 地址")} 的某个端口经 Cloudflare 隧道映射成域名（不需要公网 IP、不开入站）</div>
+      <div style="display:grid;grid-template-columns:1.4fr 1fr 0.7fr;gap:10px">
+        <div><label class="dim" style="font-size:11px">根域名（来自 Cloudflare）</label>
+          <select id="pZone" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text)">
+            <option value="">读取中…</option>
+          </select></div>
+        <div><label class="dim" style="font-size:11px">子域名（可空 = 用根域名）</label>
+          <input id="pSub" placeholder="nas" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
         <div><label class="dim" style="font-size:11px">端口</label>
           <input id="pPort" placeholder="8080" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
       </div>
+      <div class="dim" style="font-size:11px">将发布为：<span class="mono" id="pPreview">—</span> → <span class="mono">http://${esc(dev.mesh_ip || "10.88.0.x")}:端口</span></div>
       <div id="pOut"></div>
       <div class="modal-actions">
         <button class="btn" data-act="close">关闭</button>
-        <button class="btn primary" data-act="gen">生成</button>
+        <button class="btn primary" data-act="gen">发布到 Cloudflare</button>
       </div>
     </div>`;
   document.body.appendChild(mask);
@@ -1220,23 +1225,50 @@ function openPublish(dev) {
   const onKey = (e) => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
+
+  const zoneEl = mask.querySelector("#pZone");
+  const subEl = mask.querySelector("#pSub");
+  const portEl = mask.querySelector("#pPort");
+  const preview = () => {
+    const z = zoneEl.value;
+    const sub = (subEl.value || "").trim().replace(/^\.+|\.+$/g, "");
+    mask.querySelector("#pPreview").textContent = z ? (sub ? `${sub}.${z}` : z) : "（先选根域名）";
+  };
+  subEl.oninput = preview;
+  portEl.oninput = preview;
+  zoneEl.onchange = preview;
+
+  api("/api/cf/zones").then(z => {
+    zoneEl.innerHTML = z.zones && z.zones.length
+      ? z.zones.map(x => `<option value="${esc(x.name)}">${esc(x.name)}</option>`).join("")
+      : `<option value="">（读不到域名：${esc(z.hint || "Token 缺 Zone 权限")}）</option>`;
+    preview();
+  }).catch(() => { zoneEl.innerHTML = '<option value="">读取失败</option>'; });
+
   mask.querySelector('[data-act="gen"]').onclick = async () => {
+    const out = mask.querySelector("#pOut");
+    const zone = zoneEl.value;
+    const sub = (subEl.value || "").trim().replace(/^\.+|\.+$/g, "");
+    const port = Number(portEl.value);
+    if (!zone) return toast("先选一个根域名", true);
+    if (!port) return toast("填端口", true);
+    const hostname = sub ? `${sub}.${zone}` : zone;
+    const backend = `http://${dev.mesh_ip}:${port}`;
+    out.innerHTML = '<div class="dim" style="font-size:11px;margin:8px 0">写入中…（建隧道 → 写 ingress → 改 DNS）</div>';
     try {
-      const r = await api(`/api/devices/${encodeURIComponent(dev.id)}/publish`, {
-        method: "POST",
-        body: JSON.stringify({
-          hostname: mask.querySelector("#pHost").value,
-          port: Number(mask.querySelector("#pPort").value),
-        }),
-      });
-      mask.querySelector("#pOut").innerHTML = `
-        <div class="dim" style="font-size:11px;margin-top:10px">1. 隧道 ingress（config.yml 或 Dashboard → Public Hostname）</div>
-        <div class="code">${esc(r.ingress)}</div>
-        <div class="dim" style="font-size:11px">2. 在 mesh 内的机器上起 cloudflared</div>
-        <div class="code">${esc(r.command)}</div>
-        <div class="dim" style="font-size:11px">${esc(r.note)}</div>`;
-      toast("已登记：" + r.hostname + " → " + r.backend);
-    } catch (e) { toast(e.message, true); }
+      const r = await api("/api/tunnels/publish", { method: "POST", body: JSON.stringify({ hostname, backend }) });
+      out.innerHTML = `
+        <div style="font-size:11.5px;margin:8px 0;line-height:1.85">
+          <div>域名：<span class="mono">${esc(r.hostname)}</span> → <span class="mono">${esc(r.backend)}</span></div>
+          <div>隧道：<span class="mono">${esc(r.tunnelName)}</span></div>
+          <div>DNS：${r.dns === "ok" ? '<span style="color:var(--ok)">已指向 Cloudflare</span>' : '<span style="color:var(--bad)">未修改：' + esc(r.dnsError || "跳过") + "</span>"}</div>
+        </div>
+        ${r.command ? `<div class="dim" style="font-size:11px">在控制台那台起连接器（共用 awamesh 的网络命名空间）：</div><div class="code">${esc(r.command)}</div>
+          <div class="dim" style="font-size:11px">或写进 compose：</div><div class="code">${esc(r.compose || "")}</div>` : ""}`;
+      toast("已发布 " + r.hostname);
+    } catch (e) {
+      out.innerHTML = `<div style="font-size:11.5px;margin:8px 0;color:var(--bad)">失败：${esc(e.message)}</div>`;
+    }
   };
 }
 
