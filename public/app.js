@@ -828,6 +828,45 @@ async function viewSettings(main) {
         <button class="btn primary" id="saveNet">保存</button>
       </div>
       <div class="card">
+
+      <div class="card" style="margin-top:12px">
+        <div class="card-h"><b>控制台没有公网？三种接入方式</b><span id="obState">读取中…</span></div>
+        <p class="dim" style="font-size:11px;margin:0 0 10px">
+          A：把控制台放 VPS（现在这样就行）· B：反向借出到有公网的 frps · C：控制台自己也上 Tailscale（走 443 中转）
+        </p>
+
+        <details class="guide">
+          <summary><b>B · 反向接入（frpc → 远端 frps）</b></summary>
+          <p class="g-note">家里这台主动连出去，把 51820(UDP) 和 18443(TCP) 借到 VPS 上；节点连 VPS:51820 即可。</p>
+          <div style="display:grid;grid-template-columns:1.4fr 0.7fr 1fr;gap:10px;margin-top:8px">
+            <div><label class="dim" style="font-size:11px">远端 frps 地址</label>
+              <input id="obAddr" placeholder="vps.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+            <div><label class="dim" style="font-size:11px">bind 端口</label>
+              <input id="obPort" value="7000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+            <div><label class="dim" style="font-size:11px">token</label>
+              <input id="obToken" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn primary" id="obStart">启动 frpc</button>
+            <button class="btn" id="obStop">停止</button>
+          </div>
+          <div id="obLog" class="code block" style="margin-top:8px;max-height:120px"></div>
+        </details>
+
+        <details class="guide" style="margin-top:8px">
+          <summary><b>C · 控制台加入 Tailscale（全走 443，不需要公网）</b></summary>
+          <p class="g-note">需要容器有 /dev/net/tun（privileged 已包含）。加入后控制台拿到 100.x，可把 Endpoint 切过去。</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <input id="obTsKey" placeholder="tskey-auth-…" style="flex:1;min-width:220px;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text)">
+            <button class="btn primary" id="obTsUp">加入 tailnet</button>
+            <button class="btn" id="obTsUse">用 100.x 作为 Endpoint</button>
+            <button class="btn" id="obTsStop">停止</button>
+          </div>
+          <div id="obTsOut" class="dim" style="font-size:11px;margin-top:6px"></div>
+          <div id="obTsLog" class="code block" style="margin-top:8px;max-height:120px"></div>
+        </details>
+      </div>
+
         <div class="card-h"><b>Cloudflare</b><span>${cf.tokenSet ? "已配置 " + esc(cf.tokenHint) : "未配置"}</span></div>
         ${guideBox({
           title: "怎么拿到 API Token 和 Account ID？（4 步）",
@@ -997,6 +1036,56 @@ async function viewSettings(main) {
       toast(on ? "已开启 P2P（60 秒内生效）" : "已关闭 P2P：节点间流量经控制台转发（60 秒内生效）");
       renderView();
     } catch (e) { toast(e.message, true); }
+  };
+
+  const obRefresh = async () => {
+    const st = await api("/api/outbound").catch(() => null);
+    const el = main.querySelector("#obState");
+    if (!st || !el) return;
+    el.innerHTML = [
+      st.frpc.running ? '<span style="color:var(--ok)">frpc 运行中</span>' : '<span class="dim">frpc 未运行</span>',
+      st.ts.ip ? `<span style="color:var(--ok)">TS ${esc(st.ts.ip)}</span>` : '<span class="dim">未加入 tailnet</span>',
+      st.consoleEndpoint ? `<span class="dim">Endpoint ${esc(st.consoleEndpoint)}</span>` : "",
+    ].join(" · ");
+    if (st.frpc.serverAddr) main.querySelector("#obAddr").value = st.frpc.serverAddr;
+    main.querySelector("#obLog").textContent = (st.frpc.lines || []).join("\n") || "（暂无日志）";
+    main.querySelector("#obTsLog").textContent = (st.ts.lines || []).join("\n") || "（暂无日志）";
+  };
+  obRefresh();
+  main.querySelector("#obStart").onclick = async () => {
+    try {
+      const r = await api("/api/outbound/frpc", { method: "POST", body: JSON.stringify({
+        action: "start",
+        serverAddr: main.querySelector("#obAddr").value.trim(),
+        serverPort: Number(main.querySelector("#obPort").value),
+        token: main.querySelector("#obToken").value.trim(),
+      })});
+      if (r.error) { toast(r.error, true); return; }
+      toast("frpc 启动中…"); setTimeout(obRefresh, 2000);
+    } catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#obStop").onclick = async () => {
+    await api("/api/outbound/frpc", { method: "POST", body: JSON.stringify({ action: "stop" }) }).catch(() => {});
+    toast("已停止"); obRefresh();
+  };
+  main.querySelector("#obTsUp").onclick = async () => {
+    const out = main.querySelector("#obTsOut");
+    out.textContent = "加入中…（首次会创建 tailscale0）";
+    try {
+      const r = await api("/api/outbound/ts", { method: "POST", body: JSON.stringify({ action: "up", authkey: main.querySelector("#obTsKey").value.trim() }) });
+      out.textContent = r.error ? "失败：" + r.error : `已加入 · ${r.ip || "等待分配"}`;
+      setTimeout(obRefresh, 2000);
+    } catch (e) { out.textContent = e.message; }
+  };
+  main.querySelector("#obTsUse").onclick = async () => {
+    try {
+      const r = await api("/api/outbound/ts", { method: "POST", body: JSON.stringify({ action: "use" }) });
+      main.querySelector("#obTsOut").textContent = r.error ? "失败：" + r.error : `Endpoint 已切到 ${r.endpoint}（节点需要重新部署一次才会用它）`;
+    } catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#obTsStop").onclick = async () => {
+    await api("/api/outbound/ts", { method: "POST", body: JSON.stringify({ action: "stop" }) }).catch(() => {});
+    toast("已停止"); obRefresh();
   };
   main.querySelector("#wgCheck").onclick = async () => {
       const out = main.querySelector("#wgCheckOut");

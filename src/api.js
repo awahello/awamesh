@@ -9,6 +9,7 @@ import { hostInCidr, clientConfig as clientConfigText } from "./wg.js";
 import { secretSetting, saveSecretSetting, seal, open as unseal } from "./secrets.js";
 import { startConnector, connectorStatus } from "./connector.js";
 import { startFrps, stopFrps, frpsStatus, frpcTemplate } from "./frps.js";
+import { startFrpc, stopFrpc, frpcStatus, startTailscaled, stopTailscaled, tailscaleStatus, tailscaleUp } from "./outbound.js";
 
 const r = (n, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
 
@@ -906,6 +907,60 @@ export async function api(req, res, url, body) {
 
 
   // frp 服务端：让没有公网/不能开端口、甚至跑不了 WG 的设备把端口借出来
+
+  // ---- 反向接入：控制台主动连出去（适合控制台没公网） ----
+  if (url.pathname === "/api/outbound" && method === "GET") {
+    return { frpc: frpcStatus(), ts: tailscaleStatus(), consoleEndpoint: setting("wg_endpoint") || "" };
+  }
+
+  if (url.pathname === "/api/outbound/frpc" && method === "POST") {
+    const act = String(body?.action || "");
+    if (act === "stop") return stopFrpc();
+    try {
+      const r = await startFrpc({
+        serverAddr: String(body?.serverAddr || "").trim(),
+        serverPort: Number(body?.serverPort) || undefined,
+        token: String(body?.token || "").trim(),
+        wgPort: Number(body?.wgPort) || undefined,
+        panelPort: Number(body?.panelPort) || undefined,
+      });
+      addEvent("settings", `frpc 连向 ${r.serverAddr}:${r.serverPort}`);
+      return { ...r, ...frpcStatus() };
+    } catch (e) {
+      return { error: e.message, ...frpcStatus() };
+    }
+  }
+
+  if (url.pathname === "/api/outbound/ts" && method === "POST") {
+    const act = String(body?.action || "");
+    if (act === "stop") return stopTailscaled();
+    if (act === "start") return startTailscaled();
+    if (act === "up") {
+      const key = String(body?.authkey || "").trim() || secretSetting("ts_authkey", cfg.tsAuthKey);
+      if (!key) return { error: "没有 authkey" };
+      if (body?.authkey) saveSecretSetting("ts_authkey", key);
+      startTailscaled();
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const r = tailscaleUp(key, body?.hostname || "awamesh-console", setting("ts_login") || "");
+        addEvent("settings", `控制台加入 tailnet：${r.ip}`);
+        return { ...r, ...tailscaleStatus() };
+      } catch (e) {
+        return { error: e.message, ...tailscaleStatus() };
+      }
+    }
+    if (act === "use") {
+      // 把控制台的 WireGuard Endpoint 切成 100.x:51820
+      const st = tailscaleStatus();
+      if (!st.ip) return { error: "控制台还没拿到 100.x 地址" };
+      const ep = `${st.ip}:${process.env.AWA_WG_PORT || setting("wg_port") || 51820}`;
+      setting("wg_endpoint", ep);
+      addEvent("settings", `控制台 Endpoint 切到 Tailscale：${ep}`);
+      return { ok: true, endpoint: ep };
+    }
+    return { error: "未知动作" };
+  }
+
   if (url.pathname === "/api/frp" && method === "GET") {
     return frpsStatus();
   }
