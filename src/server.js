@@ -243,9 +243,9 @@ BINDIR=/usr/local/bin
 if [ -n "\${NODETOKEN:-}" ]; then
   printf '%s' "$NODETOKEN" > /etc/wireguard/awa.token
   chmod 600 /etc/wireguard/awa.token
-  cat > "$BINDIR/awa-peers" <<PEERS
+  cat > "$BINDIR/awa-peers" <<'PEERS'
 #!/bin/sh
-SERVER="$SERVER"; IFACE="$IFACE"; TOKEN="\$(cat /etc/wireguard/awa.token)"
+SERVER="@@SERVER@@"; IFACE="@@IFACE@@"; TOKEN="$(cat /etc/wireguard/awa.token)"
 PUBIP="\$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
 TSIP="\$(tailscale ip -4 2>/dev/null | head -1)"
 [ -n "\$PUBIP" ] && curl -fsS -X POST "\$SERVER/api/join/hit" \
@@ -303,6 +303,9 @@ while read -r kind a b c _rest; do
   fi
 done
 PEERS
+  sed -i "s#@@SERVER@@#$SERVER#; s#@@IFACE@@#$IFACE#" "$BINDIR/awa-peers" 2>/dev/null || {
+    sed -e "s#@@SERVER@@#$SERVER#" -e "s#@@IFACE@@#$IFACE#" "$BINDIR/awa-peers" > /tmp/awa.peers.new && mv /tmp/awa.peers.new "$BINDIR/awa-peers"
+  }
   chmod +x "$BINDIR/awa-peers"
 
   if command -v systemctl >/dev/null 2>&1; then
@@ -827,7 +830,10 @@ while read -r kind a b c _rest; do
 done < /tmp/awa.state
 # 保留 /tmp/awa.state 方便排查（每次覆盖，不占空间）
 PEERS
-chmod +x "$BINDIR/awa-peers"
+sed -i "s#@@SERVER@@#$SERVER#; s#@@IFACE@@#$IFACE#" "$BINDIR/awa-peers" 2>/dev/null || {
+    sed -e "s#@@SERVER@@#$SERVER#" -e "s#@@IFACE@@#$IFACE#" "$BINDIR/awa-peers" > /tmp/awa.peers.new && mv /tmp/awa.peers.new "$BINDIR/awa-peers"
+  }
+  chmod +x "$BINDIR/awa-peers"
 echo "  ✓ 已写入 $BINDIR/awa-peers"
 
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
