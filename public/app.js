@@ -1316,9 +1316,8 @@ async function openKeyModal() {
         <div class="dim" style="font-size:11px">在目标机器上执行：</div>
         <div class="code">${esc(cmd)}</div>
         <div class="dim" style="font-size:11px">密钥只显示这一次（${esc(r.tag)}）</div>
-        <div class="dim" style="font-size:11px;margin-top:10px">
-          Windows / 手机 / 路由器固件（只能用 WireGuard 客户端，不能跑 shell）？
-          <a href="#" id="kWin">改用「导入配置」方式生成 →</a>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn sm" id="kWin">Windows / 手机 / 路由器 → 生成可导入的配置</button>
         </div>`;
       mask.querySelector('[data-act="gen"]').textContent = "再生成一个";
       mask.querySelector("#kWin").onclick = (ev) => { ev.preventDefault(); mask.remove(); openWgCreate(); };
