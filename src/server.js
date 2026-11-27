@@ -462,14 +462,14 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/join/peers.sh" && req.method === "GET") {
       const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
       // 校验凭据有效（无效就 401，节点侧会按 401 处理）
-      peersForNode(token);
+      peersForNode(token, req.headers.host);
       res.writeHead(200, { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "no-store" });
       return res.end(peersOnlyScript(req));
     }
 
     if (p === "/api/join/state" && req.method === "GET") {
       const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
-      const data = peersForNode(token);
+      const data = peersForNode(token, req.headers.host);
       if (url.searchParams.get("format") !== "shell") return json(res, 200, data);
 
       const roles = data.self.roles || ["node"];
@@ -487,7 +487,7 @@ const server = http.createServer(async (req, res) => {
 
     if (p === "/api/join/peers" && req.method === "GET") {
       const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
-      const data = peersForNode(token);
+      const data = peersForNode(token, req.headers.host);
       if (url.searchParams.get("format") === "shell") {
         const lines = data.peers.map(x => `PEER ${x.publicKey} ${x.address}/32 ${x.endpoint || "-"} ${x.name}`);
         res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });

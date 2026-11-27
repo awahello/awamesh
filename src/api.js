@@ -141,7 +141,7 @@ function rowMeshIp(r) {
   return r.mesh_ip && String(r.mesh_ip).includes(".");
 }
 
-export function peersForNode(nodeToken) {
+export function peersForNode(nodeToken, hostHeader) {
   const hash = crypto.createHash("SHA256").update(String(nodeToken || "")).digest("hex");
   const self = db.prepare("SELECT * FROM devices d WHERE d.node_token = ?").get(hash);
   if (!self) throw Object.assign(new Error("节点凭据无效"), { status: 401 });
@@ -160,7 +160,7 @@ export function peersForNode(nodeToken) {
     const pf = (() => { try { const bk = backend(); return bk.profile ? (bk.profile() || {}) : {}; } catch { return {}; } })();
     const ep = String(pf.endpoint || "").trim();
     if (ep) return ep;
-    const host = process.env.AWA_PUBLIC_HOST || "";
+    const host = process.env.AWA_PUBLIC_HOST || String(hostHeader || "").split(":")[0] || "";
     return host ? `${host}:${process.env.AWA_WG_PORT || setting("wg_port") || 51820}` : "";
   })();
 
@@ -248,6 +248,30 @@ function currentNodeToken(dev, prefix = "nt_") {
   const hash = crypto.createHash("SHA256").update(sealed || "-").digest("hex");
   if (sealed && hash === dev.node_token) return { token: sealed, reused: true };
   return { token: issueNodeToken(dev.id, prefix), reused: false };
+}
+
+
+/** 从容器内逐个 ping mesh 地址，并把 ip_forward 一起报出来（面板自检用） */
+export async function meshSelftest() {
+  const { execFile } = await import("node:child_process");
+  const run = (cmd, args) => new Promise((res) => {
+    execFile(cmd, args, { timeout: 3000 }, (err, so) => res(String(so || "") + (err ? String(err.message || "") : "")));
+  });
+
+  let forward = "";
+  try {
+    forward = (await import("node:fs")).readFileSync("/proc/sys/net/ipv4/ip_forward", "utf8").trim();
+  } catch { forward = "?"; }
+
+  const rows = db.prepare("SELECT id, name, mesh_ip FROM devices WHERE revoked_at IS NULL ORDER BY mesh_ip").all();
+  const results = [];
+  for (const r of rows) {
+    if (!r.mesh_ip || r.mesh_ip === "10.88.0.1") { results.push({ id: r.id, name: r.name, ip: r.mesh_ip, ok: true, note: "本机" }); continue; }
+    const out = await run("ping", ["-c", "2", "-W", "2", r.mesh_ip]);
+    const ok = /(\d+)\s+packets received/.test(out) ? !/0 packets received/.test(out) : !/100% packet loss/.test(out);
+    results.push({ id: r.id, name: r.name, ip: r.mesh_ip, ok, note: ok ? "通" : "不通" });
+  }
+  return { iface: wg.iface, managed: isManaged(), ipForward: forward, results };
 }
 
 /** 把 "192.168.1.0/24, 10.0.0.0/8" 解析成数组 */
@@ -795,6 +819,10 @@ export async function api(req, res, url, body) {
     rotateSessions();
     addEvent("auth", "后台口令已修改，所有会话失效");
     return { ok: true };
+  }
+
+  if (url.pathname === "/api/wg/selftest" && method === "POST") {
+    return meshSelftest();
   }
 
   if (url.pathname === "/api/backup/export" && method === "GET") {
