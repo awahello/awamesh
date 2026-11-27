@@ -280,6 +280,7 @@ async function viewDevices(main) {
               `# 对端：${st.found ? "在接口里" : "不在接口里"} · endpoint：${st.endpoint || "—"}`,
               `# 握手：${ago} · 收 ${st.rx ?? "?"} B / 发 ${st.tx ?? "?"} B · ${st.alive ? "在线" : "离线"}`,
               `# Tailscale：${st.tsIp ? st.tsIp + (st.tsAgo != null ? "（" + st.tsAgo + " 秒前上报）" : "") : "未接入（WireGuard 通了就不会装）"}`,
+              `# 回连方式：${dev.via_ts ? "经 Tailscale（适合无公网/不能开端口）" : "直连或经控制台"}`,
               ...(st.hints || []).map(h => "# ! " + h),
               "",
             ].join("\n");
@@ -325,7 +326,7 @@ function rowDevice(x) {
       <span class="dot ${x.revoked_at ? "bad" : x.online ? "ok" : "off"}"></span>
       <span>
         <b>${esc(x.name)}</b>
-        ${x.ts_ip ? `<span class="tag ${x.ts_at && (Date.now() / 1000 - x.ts_at) < 600 ? "info" : ""}" title="Tailscale 兜底地址${x.ts_at ? " · " + Math.round((Date.now() / 1000 - x.ts_at)) + " 秒前上报" : ""}">TS ${esc(x.ts_ip)}</span>` : ""}
+        ${x.ts_ip ? `<span class="tag ${x.via_ts ? "info" : (x.ts_at && (Date.now() / 1000 - x.ts_at) < 600 ? "info" : "")}" title="${x.via_ts ? "正在经 Tailscale 回连" : "Tailscale 地址（未启用回连）"}" title="Tailscale 兜底地址${x.ts_at ? " · " + Math.round((Date.now() / 1000 - x.ts_at)) + " 秒前上报" : ""}">TS ${esc(x.ts_ip)}</span>` : ""}
         ${x.tags?.length ? `<div class="dim" style="font-size:11px">${esc(x.tags.join(" · "))}</div>` : ""}
       </span>
     </div>
@@ -1396,6 +1397,7 @@ async function openDeploy(dev) {
         <button class="btn" data-act="win">Windows 命令</button>
         <button class="btn" data-act="ts">Tailscale 兜底命令</button>
         <button class="btn" data-act="fix">修复凭据</button>
+        <button class="btn" data-act="viats">${dev.via_ts ? "取消 Tailscale 回连" : "经 Tailscale 回连"}</button>
       </div>
       <div id="winBox"></div>`;
     mask.querySelector('[data-act="copy"]').onclick = async () => {
@@ -1403,6 +1405,13 @@ async function openDeploy(dev) {
       catch { toast("复制失败，请手动选择", true); }
     };
     const winCmd = "irm '" + location.origin + "/dp/" + r.token + "/windows' | iex";
+    mask.querySelector('[data-act="viats"]').onclick = async () => {
+      try {
+        const r = await api(`/api/devices/${encodeURIComponent(dev.id)}/via-ts`, { method: "POST", body: JSON.stringify({ enabled: !dev.via_ts }) });
+        toast(r.viaTs ? `已改为经 Tailscale 回连（${r.tsIp}）` : "已恢复直连/中转");
+        close(); renderView();
+      } catch (e) { toast(e.message, true); }
+    };
     mask.querySelector('[data-act="fix"]').onclick = async () => {
       try {
         const t = await api(`/api/devices/${encodeURIComponent(dev.id)}/token`, { method: "POST", body: "{}" });

@@ -221,13 +221,19 @@ export async function updateNodeEndpoint(nodeToken, endpoint, port, tsIp) {
 
   const h = (v) => String(v || "").replace(/^\[/, "").replace(/\]:\d+$/, "").replace(/:\d+$/, "");
   const mismatch = !!learned && h(learned) !== h(epFull);
-  const effective = mismatch ? learned : epFull;
+  let effective = mismatch ? learned : epFull;
+
+  // 没有公网 / 不能开端口：走 Tailscale 回连（只有控制台需要能到它，其它节点经控制台转发）
+  if (self.via_ts && self.ts_ip) {
+    effective = `${self.ts_ip}:51820`;
+  }
 
   db.prepare("UPDATE devices SET endpoint = ?, reported_endpoint = ?, wg_port = ? WHERE id = ?")
     .run(effective, epFull, Number(port) || null, self.id);
 
-  if (isManaged() && peer?.public_key && !mismatch) {
-    await wg.setEndpoint(peer.public_key, epFull);
+  if (isManaged() && peer?.public_key) {
+    if (self.via_ts && self.ts_ip) await wg.setEndpoint(peer.public_key, `${self.ts_ip}:51820`);
+    else if (!mismatch) await wg.setEndpoint(peer.public_key, epFull);
   }
   return { ok: true, changed: self.endpoint !== effective, endpoint: effective, reported: epFull, mismatch };
 }
@@ -1160,6 +1166,20 @@ ingress:
     setting("p2p", on ? "1" : "0");
     addEvent("settings", on ? "开启 P2P 直连" : "关闭 P2P：所有节点间流量经控制台转发");
     return { ok: true, p2p: on };
+  }
+
+
+  // 经 Tailscale 回连：设备没有公网、不能开端口时用
+  if (seg[0] === "devices" && seg[2] === "via-ts" && method === "POST") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+    const on = body?.enabled === undefined ? !dev.via_ts : !!body.enabled;
+    if (on && !dev.ts_ip) throw new Error("这台还没上报 Tailscale 地址：先让它在节点上 tailscale up");
+    db.prepare("UPDATE devices SET via_ts = ? WHERE id = ?").run(on ? 1 : 0, seg[1]);
+    const peer = db.prepare("SELECT public_key FROM wg_peers WHERE device_id = ?").get(seg[1]);
+    if (isManaged() && peer?.public_key && on) await wg.setEndpoint(peer.public_key, `${dev.ts_ip}:51820`);
+    addEvent("device", `${dev.name} ${on ? "改为经 Tailscale 回连" : "恢复直连/中转"}`, seg[1]);
+    return { ok: true, viaTs: on, tsIp: dev.ts_ip || "" };
   }
 
   if (seg[0] === "devices" && seg[2] === "uninstall" && method === "GET") {

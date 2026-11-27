@@ -92,6 +92,8 @@ try { db.exec("ALTER TABLE devices ADD COLUMN routes TEXT"); } catch {}
 try { db.exec("ALTER TABLE tunnels ADD COLUMN source TEXT"); } catch {}
 // 中继记录可以由某台设备兼任（角色里勾了「中继」时自动建）
 try { db.exec("ALTER TABLE relays ADD COLUMN device_id TEXT"); } catch {}
+// 经 Tailscale 回连（设备没有公网/不能开端口时用）
+try { db.exec("ALTER TABLE devices ADD COLUMN via_ts INTEGER DEFAULT 0"); } catch {}
 // 每台设备是否参与 P2P 直连（0 = 只走控制台转发，用于打洞总是失败的网络）
 try { db.exec("ALTER TABLE devices ADD COLUMN p2p INTEGER DEFAULT 1"); } catch {}
 // 节点凭据的密文副本：一键部署时不轮换，避免把已接入的节点踢成 401
