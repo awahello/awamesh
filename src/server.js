@@ -599,6 +599,18 @@ async function wgBoot() {
     const bits = Number((setting("wg_subnet") || cfg.meshCidr).split("/")[1]) || 24;
     await wg.ensure(serverIp, Number(setting("wg_mtu") || cfg.mtu), port, bits);
     log(`[wg] 已接管接口 ${wg.iface}：${serverIp}/${bits} · udp ${port}`);
+
+    // 节点之间靠控制台转发（hub 模式），必须开 ip_forward，否则 A→B 的包进来就被丢掉
+    try {
+      const cur = fs.readFileSync("/proc/sys/net/ipv4/ip_forward", "utf8").trim();
+      if (cur !== "1") {
+        fs.writeFileSync("/proc/sys/net/ipv4/ip_forward", "1");
+        log("[wg] 已开启 net.ipv4.ip_forward（节点间转发）");
+      }
+    } catch (e) {
+      log("[wg] 开启 ip_forward 失败：" + e.message + "（compose 里加 sysctls: { net.ipv4.ip_forward: \"1\" }）");
+    }
+
     _wgOn = true;
     setManaged(true);
 
