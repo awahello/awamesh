@@ -1169,8 +1169,7 @@ function openRoles(dev) {
       <div id="tOut"></div>
       <div class="modal-actions">
         <button class="btn" data-act="close">取消</button>
-        <button class="btn" data-act="local">只本地登记</button>
-        <button class="btn primary" data-act="publish">发布到 Cloudflare</button>
+        <button class="btn primary" data-act="ok">保存</button>
       </div>
     </div>`;
   document.body.appendChild(mask);
@@ -1473,9 +1472,11 @@ function openAddTunnel() {
       <input id="tHost" placeholder="nas.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 10px">
       <label class="dim" style="font-size:11px">后端（IP 或主机:端口）</label>
       <input id="tBack" placeholder="10.88.0.5:5000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
+      <div id="tOut"></div>
       <div class="modal-actions">
         <button class="btn" data-act="close">取消</button>
-        <button class="btn primary" data-act="ok">保存</button>
+        <button class="btn" data-act="local">只本地登记</button>
+        <button class="btn primary" data-act="publish">发布到 Cloudflare</button>
       </div>
     </div>`;
   document.body.appendChild(mask);
