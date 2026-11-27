@@ -1,12 +1,13 @@
 import { cfg } from "./config.js";
 import { db, now, setting, listRelays, listTunnels, listEvents, addEvent } from "./db.js";
 import { backend } from "./backends/index.js";
-import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows, ensureTunnel, publishIngress, zoneFor, pointDns, tunnelToken, listZones } from "./cloudflare.js";
+import { cfApi as cf, cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows, ensureTunnel, publishIngress, zoneFor, pointDns, tunnelToken, listZones } from "./cloudflare.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { wg, isManaged } from "./wgsrv.js";
 import { hostInCidr, clientConfig as clientConfigText } from "./wg.js";
 import { secretSetting, saveSecretSetting, seal, open as unseal } from "./secrets.js";
+import { startConnector, connectorStatus } from "./connector.js";
 
 const r = (n, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
 
@@ -1264,7 +1265,15 @@ ingress:
       addEvent("settings", t ? "Cloudflare Token 已更新" : "Cloudflare Token 已清除");
     }
     if (body?.account !== undefined) setCfAccount(String(body.account).trim());
-    return { ok: true, enabled: cfEnabled(), account: cfAccount() };
+    return { ok: true, enabled: cfEnabled(), account: cfAccount(), tunnelName: setting("cf_tunnel_name") || "awamesh" };
+  }
+
+
+  if (url.pathname === "/api/cf/tunnel-name" && method === "POST") {
+    const name = String(body?.name || "").trim().slice(0, 60);
+    setting("cf_tunnel_name", name || "awamesh");
+    addEvent("settings", `Cloudflare 隧道名改为 ${name || "awamesh"}`);
+    return { ok: true, name: name || "awamesh" };
   }
 
   if (url.pathname === "/api/cf/zones" && method === "GET") {
@@ -1324,7 +1333,9 @@ ingress:
     const account = cfAccount();
     if (!account) throw new Error("先填 Account ID（设置 → Cloudflare）");
 
-    const tun = await ensureTunnel(account, body?.tunnelName || "awamesh");
+    // 全站共用一个隧道：默认叫 awamesh，可在设置里改成你已有的隧道名（不会新建第二个）
+    const tunnelName = String(body?.tunnelName || setting("cf_tunnel_name") || "awamesh").trim();
+    const tun = await ensureTunnel(account, tunnelName);
     const rules = await publishIngress(account, tun.id, hostname, backend);
 
     let dns = "skipped";
@@ -1346,15 +1357,34 @@ ingress:
       .run("cf_" + tun.id + "_" + hostname, tun.name, hostname, backend.replace(/^https?:\/\//, ""), "unknown", null, now(), 0);
     db.prepare("UPDATE tunnels SET source = 'awamesh' WHERE id = ?").run("cf_" + tun.id + "_" + hostname);
 
+    // 用内置连接器：发布即启动，不用再装第二个 cloudflared
+    let connector = connectorStatus();
+    if (token && !connector.running) {
+      try {
+        await startConnector(token);
+        saveSecretSetting("cf_tunnel_token", token);
+        connector = connectorStatus();
+      } catch (e) {
+        addEvent("tunnel", `连接器启动失败：${e.message}`);
+      }
+    }
+
     addEvent("tunnel", `发布 ${hostname} → ${backend}（隧道 ${tun.name}）`);
     // 关键：连接器必须和控制台共享同一个网络命名空间，才看得到 10.88.0.0/24
     const command = token
       ? `docker run -d --name cf-${tun.name} --restart unless-stopped --network container:awamesh cloudflare/cloudflared:latest tunnel --no-autoupdate run --token ${token}`
       : "";
     const compose = token
-      ? `  cloudflared://n    image: cloudflare/cloudflared:latest\n    container_name: cf-${tun.name}\n    network_mode: "service:awamesh"\n    restart: unless-stopped\n    command: tunnel --no-autoupdate run --token ${token}`
+      ? [
+          "  cloudflared:",
+          "    image: cloudflare/cloudflared:latest",
+          `    container_name: cf-${tun.name}`,
+          '    network_mode: "service:awamesh"',
+          "    restart: unless-stopped",
+          `    command: tunnel --no-autoupdate run --token ${token}`,
+        ].join("\n")
       : "";
-    return { ok: true, tunnelId: tun.id, tunnelName: tun.name, hostname, backend, ingress: rules, dns, dnsError, command, compose, tokenAvailable: !!token };
+    return { ok: true, tunnelId: tun.id, tunnelName: tun.name, hostname, backend, ingress: rules, dns, dnsError, command, compose, tokenAvailable: !!token, connector };
   }
 
   if (url.pathname === "/api/tunnels/sync" && method === "POST") {
@@ -1456,9 +1486,31 @@ ingress:
   if (seg[0] === "tunnels" && seg[2] === "delete" && method === "POST") {
     const row = db.prepare("SELECT * FROM tunnels WHERE id = ?").get(seg[1]);
     if (!row) throw new Error("隧道不存在");
+    if (row.source !== "awamesh") {
+      throw Object.assign(new Error("这条是你在 Cloudflare 后台手动建的，面板只读。请到 CF 后台删除"), { status: 400 });
+    }
+
+    // 面板建的：同时把这条 ingress 从隧道里摘掉，别留悬空规则
+    let removed = false;
+    const m = /^cf_([0-9a-f-]{36})_(.+)$/.exec(row.id);
+    const account = cfAccount();
+    if (m && account && cfEnabled()) {
+      try {
+        const cur = await cf(`/accounts/${account}/cfd_tunnel/${m[1]}/configurations`);
+        const ingress = (cur?.config?.ingress || []).filter(r => r.hostname !== row.hostname);
+        await cf(`/accounts/${account}/cfd_tunnel/${m[1]}/configurations`, {
+          method: "PUT",
+          body: JSON.stringify({ config: { ingress: ingress.length ? ingress : [{ service: "http_status:404" }] } }),
+        });
+        removed = true;
+      } catch (e) {
+        addEvent("tunnel", `删除 ${row.hostname} 时改 ingress 失败：${e.message}`);
+      }
+    }
+
     db.prepare("DELETE FROM tunnels WHERE id = ?").run(seg[1]);
-    addEvent("tunnel", `删除隧道 ${row.hostname}`);
-    return { ok: true };
+    addEvent("tunnel", `删除隧道 ${row.hostname}${removed ? "（已同步移除 ingress）" : ""}`);
+    return { ok: true, ingressRemoved: removed };
   }
 
   if (url.pathname === "/api/events" && method === "GET") {

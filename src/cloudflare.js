@@ -49,6 +49,11 @@ export async function listAccounts() {
   return cf("/accounts?per_page=50");
 }
 
+/** 直接调 Cloudflare API（内部用，导出给 api.js 复用） */
+export async function cfApi(path, init) {
+  return cf(path, init);
+}
+
 /** 找一个同名隧道，没有就建一个（需要 Account → Cloudflare Tunnel → Write） */
 export async function ensureTunnel(accountId, name = "awamesh") {
   const list = (await cf(`/accounts/${accountId}/cfd_tunnel?is_deleted=false&per_page=50`)) || [];

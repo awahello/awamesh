@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { secretSetting, saveSecretSetting } from "./secrets.js";
+import { startConnector, stopConnector, connectorStatus } from "./connector.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cfg, log } from "./config.js";
@@ -444,28 +445,23 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/tunnel/connector" && req.method === "GET") {
-      return json(res, 200, cfStatus());
+      return json(res, 200, connectorStatus());
     }
 
     if (p === "/api/tunnel/connector" && req.method === "POST") {
       const body = await readBody(req);
       const act = String(body?.action || "");
-      if (act === "stop") return json(res, 200, cfStop());
+      if (act === "stop") return json(res, 200, stopConnector());
       const token = String(body?.token || "").trim() || secretSetting("cf_tunnel_token", "");
       if (!token) return json(res, 400, { error: "没有 token：先「发布到 Cloudflare」，把弹层里的 token 粘进来" });
       if (body?.token) saveSecretSetting("cf_tunnel_token", token);
-      cfStop();
-      let bin = "cloudflared";
+      stopConnector();
       try {
-        const res = await resolveCloudflared();
-        bin = res.bin;
-        cfLog(`[bin] ${res.bin} · ${res.version}`);
+        const r = await startConnector(token);
+        return json(res, 200, { ...r, ...connectorStatus() });
       } catch (e) {
-        cfLog("[bin] 准备 cloudflared 失败：" + e.message);
-        return json(res, 500, { error: e.message, ...cfStatus() });
+        return json(res, 500, { error: e.message, ...connectorStatus() });
       }
-      const r = cfStart(token, bin);
-      return json(res, 200, { ...r, ...cfStatus() });
     }
 
     if (p === "/api/join/peers.sh" && req.method === "GET") {
@@ -739,75 +735,7 @@ globalThis.__awaProbeRelays = () => probeRelays();
 
 
 
-/* ---------- Cloudflare 隧道连接器（cloudflared 跑在容器内，天然共享网络命名空间） ---------- */
-const cfRunner = { proc: null, lines: [], since: 0 };
-
-function cfLog(line) {
-  cfRunner.lines.push(line);
-  if (cfRunner.lines.length > 120) cfRunner.lines.shift();
-}
-
-/** 找一个能跑的 cloudflared：内置的 → /data/bin（运行时下载）→ 现场下载 */
-async function resolveCloudflared() {
-  const { execFileSync } = await import("node:child_process");
-  const candidates = ["cloudflared", "/usr/local/bin/cloudflared", "/data/bin/cloudflared"];
-  for (const c of candidates) {
-    try {
-      const v = execFileSync(c, ["--version"], { timeout: 3000 }).toString().trim();
-      if (v) return { bin: c, version: v };
-    } catch { /* 下一个 */ }
-  }
-  // 都不行：按当前架构下载到 /data/bin
-  const arch = process.arch === "arm64" ? "arm64" : "amd64";
-  const url = `https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}`;
-  fs.mkdirSync("/data/bin", { recursive: true });
-  const out = "/data/bin/cloudflared";
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`下载 cloudflared 失败：HTTP ${r.status}`);
-  const buf = Buffer.from(await r.arrayBuffer());
-  if (buf.length < 1_000_000) throw new Error(`下载的 cloudflared 太小（${buf.length} B），可能是错误页`);
-  fs.writeFileSync(out, buf, { mode: 0o755 });
-  const v = execFileSync(out, ["--version"], { timeout: 5000 }).toString().trim();
-  return { bin: out, version: v };
-}
-
-function cfStart(token, bin) {
-  if (cfRunner.proc) return { running: true };
-  if (!token) return { running: false, error: "没有 token" };
-  const p = spawn(bin || "cloudflared", ["tunnel", "--no-autoupdate", "run", "--token", token], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  cfRunner.proc = p;
-  cfRunner.since = Date.now();
-  cfLog("[start] cloudflared 已启动");
-  const onData = (d) => String(d).split("\n").map(x => x.trim()).filter(Boolean).forEach(cfLog);
-  p.stdout.on("data", onData);
-  p.stderr.on("data", onData);
-  p.on("exit", (code, sig) => {
-    cfLog(`[exit] code=${code} sig=${sig || "-"}`);
-    cfRunner.proc = null;
-  });
-  p.on("error", (e) => { cfLog("[error] " + e.message); cfRunner.proc = null; });
-  return { running: true };
-}
-
-function cfStop() {
-  if (!cfRunner.proc) return { running: false };
-  try { cfRunner.proc.kill("SIGTERM"); } catch { /* ignore */ }
-  cfRunner.proc = null;
-  cfLog("[stop] 已停止");
-  return { running: false };
-}
-
-function cfStatus() {
-  const tail = cfRunner.lines.slice(-25);
-  return {
-    running: !!cfRunner.proc,
-    since: cfRunner.since || null,
-    connected: tail.some(l => /Registered tunnel connection/i.test(l)),
-    lines: tail,
-  };
-}
+/* ---------- Cloudflare 隧道连接器：实现移到 src/connector.js ---------- */
 
 /** 每日把整份配置写到 data/auto-backup/，方便 rsync 到备机（保留 7 份） */
 function autoBackupOnce() {
@@ -992,6 +920,10 @@ server.listen(cfg.port, cfg.host, () => {
   if (cfg.mode === "tiny") log("tiny 模式：事件保留 " + cfg.eventKeepDays + " 天，健康检查间隔放宽");
   wgBoot();
   ensureBuiltinRelay();
+  const savedToken = secretSetting("cf_tunnel_token", "");
+  if (savedToken) {
+    setTimeout(() => { startConnector(savedToken).catch((e) => log("[cf] 自动启动连接器失败：" + e.message)); }, 5000).unref();
+  }
   setTimeout(autoBackupOnce, 30_000).unref();
   setInterval(autoBackupOnce, 24 * 3600_000).unref();
   probeRelays().catch(() => {});

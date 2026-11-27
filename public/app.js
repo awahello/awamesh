@@ -463,11 +463,13 @@ async function viewTunnels(main) {
         <div class="row head" style="grid-template-columns:2fr 1.4fr 0.8fr 0.8fr 0.6fr"><div>域名</div><div>后端</div><div>状态</div><div>检查</div><div></div></div>
         ${d.tunnels.map(t => `
           <div class="row" style="grid-template-columns:2fr 1.4fr 0.8fr 0.8fr 0.6fr">
-            <div class="cell"><b>${esc(t.hostname)}</b></div>
+            <div class="cell"><b>${esc(t.hostname)}</b> ${t.source === "awamesh" ? '<span class="tag info" title="由 awamesh 发布（ingress 写的是 mesh 地址）">部署端</span>' : '<span class="tag" title="你在 Cloudflare 后台手动配置的，awamesh 只读">CF 手动</span>'}</div>
             <div class="cell mono muted">${esc(t.backend)}</div>
             <div class="cell" style="font-size:12px"><span class="dot ${t.health === "ok" ? "ok" : t.health === "down" ? "bad" : "warn"}"></span> ${t.health === "ok" ? "正常" : t.health === "down" ? "后端不通" : "待检查"}</div>
             <div class="cell dim" style="font-size:12px">${fmtTime(t.last_check)}</div>
-            <div style="text-align:right"><button class="btn sm danger" data-tun="${esc(t.id)}">删除</button></div>
+            <div style="text-align:right">${t.source === "awamesh"
+              ? `<button class="btn sm danger" data-tun="${esc(t.id)}">删除</button>`
+              : `<button class="btn sm" disabled title="手动在 Cloudflare 建的：请到 CF 后台修改，面板不改动它">只读</button>`}</div>
           </div>`).join("") || `<div class="empty">还没有隧道，点右上角「添加隧道」</div>`}
       </div>
       <p class="dim" style="font-size:11px;margin:12px 0 0">v0.1 为只读同步；把 ingress 改指 mesh 地址与回滚在 v0.2 提供。</p>
@@ -478,7 +480,7 @@ async function viewTunnels(main) {
   if (go) go.onclick = () => { S.view = "settings"; render(); };
   main.querySelectorAll("[data-tun]").forEach(b => {
     b.onclick = async () => {
-      if (!confirm("删除这条隧道记录？不影响 Cloudflare 上真实的隧道。")) return;
+      if (!confirm("从面板移除这条记录？（会同时把该域名的 ingress 从 awamesh 隧道里删掉）")) return;
       await api(`/api/tunnels/${encodeURIComponent(b.dataset.tun)}/delete`, { method: "POST", body: "{}" });
       toast("已删除");
       renderView();
@@ -1299,8 +1301,10 @@ function openPublish(dev) {
           <div>隧道：<span class="mono">${esc(r.tunnelName)}</span></div>
           <div>DNS：${r.dns === "ok" ? '<span style="color:var(--ok)">已指向 Cloudflare</span>' : '<span style="color:var(--bad)">未修改：' + esc(r.dnsError || "跳过") + "</span>"}</div>
         </div>
-        ${r.command ? `<div class="dim" style="font-size:11px">在控制台那台起连接器（共用 awamesh 的网络命名空间）：</div><div class="code">${esc(r.command)}</div>
-          <div class="dim" style="font-size:11px">或写进 compose：</div><div class="code">${esc(r.compose || "")}</div>` : ""}`;
+        <div style="font-size:11.5px;margin-top:8px">连接器：${r.connector && r.connector.running ? (r.connector.connected ? '<span style="color:var(--ok)">已连接 ✓</span>' : '<span style="color:var(--warn)">已启动，等待握手</span>') : '<span style="color:var(--bad)">未启动</span>'}</div>
+        ${r.command ? `<details style="margin-top:6px"><summary class="dim" style="font-size:11px;cursor:pointer">在别的机器上跑（可选）</summary>
+          <div class="code">${esc(r.command)}</div>
+          <div class="dim" style="font-size:11px">或写进 compose：</div><div class="code">${esc(r.compose || "")}</div></details>` : ""}`;
       toast("已发布 " + r.hostname);
     } catch (e) {
       out.innerHTML = `<div style="font-size:11.5px;margin:8px 0;color:var(--bad)">失败：${esc(e.message)}</div>`;
