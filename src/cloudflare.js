@@ -99,12 +99,14 @@ export async function ensureTunnel(accountId, name = "awamesh") {
 
 /** 把某个域名指向 mesh 地址，写进隧道 ingress（保留其它规则，末尾补 404） */
 export async function publishIngress(accountId, tunnelId, hostname, backend) {
+  // backend 可以是数组：同一 hostname 写多条 → Cloudflare 侧轮询到多个 origin（负载均衡）
+  const targets = Array.isArray(backend) ? backend : [backend];
   let ingress = [];
   try {
     const cur = await cf(`/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`);
     ingress = (cur?.config?.ingress || []).filter(r => r.hostname && r.hostname !== hostname);
   } catch { ingress = []; }
-  const rules = [...ingress, { hostname, service: backend }, { service: "http_status:404" }];
+  const rules = [...ingress, ...targets.map(t => ({ hostname, service: t })), { service: "http_status:404" }];
   await cf(`/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
     method: "PUT",
     body: JSON.stringify({ config: { ingress: rules } }),

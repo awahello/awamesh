@@ -322,13 +322,32 @@ export async function probeTunnels() {
     sock.connect(port, host);
   });
 
+  const all = [];
   for (const r of rows) {
+    const targets = String(r.backend || "").split(",").map(x => x.trim()).filter(Boolean);
+    if (targets.length > 1 && r.mode === "standby") {
+      const health = [];
+      for (const t of targets) health.push({ t, ok: (await tryOne(t)).ok });
+      const firstOk = health.find(h => h.ok);
+      const keep = firstOk ? firstOk.t : targets[0];
+      const m = /^cf_([0-9a-f-]{36})_(.+)$/.exec(r.id);
+      const account = cfAccount();
+      if (m && account && cfEnabled()) {
+        try {
+          const host = m[2];
+          await publishIngress(account, m[1], host, ["http://" + keep.replace(/^https?:\/\//, "")]);
+        } catch { /* ignore */ }
+      }
+      db.prepare("UPDATE tunnels SET health = ?, last_check = ? WHERE id = ?").run(firstOk ? "ok" : "down", now(), r.id);
+      all.push({ hostname: r.hostname, backend: keep, ok: !!firstOk, why: firstOk ? `主备：切到 ${keep}` : "全部不可用" });
+      continue;
+    }
     const res = await tryOne(r.backend);
     db.prepare("UPDATE tunnels SET health = ?, last_check = ? WHERE id = ?")
       .run(res.ok ? "ok" : "down", t, r.id);
     result.push({ hostname: r.hostname, backend: r.backend, ok: res.ok, why: res.why });
   }
-  return { checked: result.length, results: result, at: t };
+  return { checked: result.length + all.length, results: [...result, ...all], at: t };
 }
 
 /** 从容器内逐个 ping mesh 地址，并把 ip_forward 一起报出来（面板自检用） */
@@ -1512,7 +1531,14 @@ ingress:
     const hostname = String(body?.hostname || "").trim().toLowerCase().slice(0, 120);
     const backend = String(body?.backend || "").trim().slice(0, 120);
     if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(hostname)) throw new Error("域名格式不对，例：nas.example.com");
-    if (!/^https?:\/\/[^\s]+$/.test(backend)) throw new Error("后端要写成 http://10.88.0.5:8080");
+    // 支持多目标：逗号或换行分隔，例如 http://10.88.0.3:8000, http://10.88.0.4:8000
+    const targets = String(backend)
+      .split(/[,\n]/).map(x => x.trim()).filter(Boolean)
+      .map(x => (/^https?:\/\//.test(x) ? x : "http://" + x));
+    if (!targets.length) throw new Error("后端要写成 http://10.88.0.5:8080");
+    for (const t of targets) {
+      if (!/^https?:\/\/[^\s]+$/.test(t)) throw new Error(`后端地址格式不对：${t}`);
+    }
 
     const account = cfAccount();
     if (!account) throw new Error("先填 Account ID（设置 → Cloudflare）");
@@ -1520,7 +1546,7 @@ ingress:
     // 全站共用一个隧道：默认叫 awamesh，可在设置里改成你已有的隧道名（不会新建第二个）
     const tunnelName = String(body?.tunnelName || setting("cf_tunnel_name") || "awamesh").trim();
     const tun = await pickTunnel(account, tunnelName, setting("cf_tunnel_id") || "");
-    const rules = await publishIngress(account, tun.id, hostname, backend);
+    const rules = await publishIngress(account, tun.id, hostname, targets);
 
     let dns = "skipped";
     let dnsError = "";
@@ -1538,7 +1564,8 @@ ingress:
     db.prepare(`INSERT INTO tunnels(id,name,hostname,backend,health,latency_ms,last_check,migratable)
       VALUES(?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET backend=excluded.backend, name=excluded.name, last_check=excluded.last_check`)
-      .run("cf_" + tun.id + "_" + hostname, tun.name, hostname, backend.replace(/^https?:\/\//, ""), "unknown", null, now(), 0);
+      .run("cf_" + tun.id + "_" + hostname, tun.name, hostname, targets.map(t => t.replace(/^https?:\/\//, "")).join(", "), "unknown", null, now(), 0);
+    db.prepare("UPDATE tunnels SET mode = ? WHERE id = ?").run(String(body?.mode || "lb") === "standby" ? "standby" : "lb", "cf_" + tun.id + "_" + hostname);
     db.prepare("UPDATE tunnels SET source = 'awamesh' WHERE id = ?").run("cf_" + tun.id + "_" + hostname);
 
     // 用内置连接器：发布即启动，不用再装第二个 cloudflared
@@ -1569,7 +1596,7 @@ ingress:
           `    command: tunnel --no-autoupdate run --token ${token}`,
         ].join("\n")
       : "";
-    return { ok: true, tunnelId: tun.id, tunnelName: tun.name, pickedReason: tun.pickedReason || "", hostname, backend, ingress: rules, dns, dnsError, command, compose, tokenAvailable: !!token, connector };
+    return { ok: true, tunnelId: tun.id, tunnelName: tun.name, pickedReason: tun.pickedReason || "", hostname, backend: targets.join(", "), targets, ingress: rules, dns, dnsError, command, compose, tokenAvailable: !!token, connector };
   }
 
   if (url.pathname === "/api/tunnels/sync" && method === "POST") {

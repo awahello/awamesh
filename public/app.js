@@ -22,19 +22,37 @@ const fmtTime = (ts) => {
 };
 const fmtGb = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + " TB" : Math.round(n) + " GB");
 
+const ERR_HINT = [
+  [/fetch|network|Failed to fetch/i, "控制台连不上：检查网络或反代是否在跑"],
+  [/HTTP 401|not authorized/i, "凭据无效：回面板重新生成"],
+  [/ENOEXEC|ENOENT/i, "容器里缺可执行文件（旧镜像？升级一版）"],
+  [/timeout|ETIMEDOUT/i, "对方没响应：端口没开或对端没在听"],
+  [/Cloudflare 返回 4\d\d/i, "Cloudflare 拒绝了请求：检查 Token 权限"],
+];
+
+function friendly(msg) {
+  for (const [re, hint] of ERR_HINT) if (re.test(msg)) return `${msg}\n→ ${hint}`;
+  return msg;
+}
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      ...opts,
+    });
+  } catch (e) {
+    throw new Error(friendly("网络错误：" + e.message));
+  }
   if (res.status === 401) {
     S.authed = false;
     render();
-    throw new Error("登录已失效");
+    throw new Error("登录已失效，请重新登录");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "请求失败 " + res.status);
+  if (!res.ok) throw new Error(friendly(data.error || `请求失败（HTTP ${res.status}）`));
   return data;
 }
 
@@ -301,6 +319,10 @@ async function viewDevices(main) {
         openPublish(dev);
         return;
       }
+      if (b.dataset.op === "more") {
+        openMore(dev);
+        return;
+      }
       if (b.dataset.op === "del") {
         openDeleteDevice(dev);
         return;
@@ -314,8 +336,67 @@ async function viewDevices(main) {
   });
 }
 
+
+/* ---------------- 设备「⋯」更多操作 ---------------- */
+function openMore(dev) {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="modal" style="width:min(420px,100%)">
+      <h3>${esc(dev.name)}</h3>
+      <div class="sub">${esc(dev.mesh_ip || "")} · ${esc((dev.roles || []).join(" + ") || "节点")}</div>
+      <div style="display:grid;gap:8px">
+        <button class="btn" data-op="roles">角色与网段</button>
+        <button class="btn" data-op="publish">发布服务到域名</button>
+        <button class="btn" data-op="rename">改名</button>
+        <button class="btn" data-op="uninstall">卸载命令（在这台机器上跑）</button>
+        <button class="btn danger" data-op="revoke">吊销（立即断网）</button>
+        <button class="btn danger" data-op="del">删除设备</button>
+      </div>
+      <div class="modal-actions"><button class="btn" data-op="close">关闭</button></div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  mask.querySelectorAll("[data-op]").forEach(b => {
+    b.onclick = async () => {
+      const op = b.dataset.op;
+      if (op === "close") return close();
+      if (op === "roles") { close(); return openRoles(dev); }
+      if (op === "publish") { close(); return openPublish(dev); }
+      if (op === "rename") {
+        const name = prompt("新名字", dev.name);
+        if (!name) return;
+        try { await api(`/api/devices/${encodeURIComponent(dev.id)}/rename`, { method: "POST", body: JSON.stringify({ name }) }); close(); toast("已改名"); renderView(); }
+        catch (e) { toast(e.message, true); }
+        return;
+      }
+      if (op === "uninstall") {
+        try {
+          const r = await api(`/api/devices/${encodeURIComponent(dev.id)}/uninstall`);
+          mask.querySelector(".modal").insertAdjacentHTML("beforeend",
+            `<div class="dim" style="font-size:11px;margin-top:10px">在那台机器上以 root 执行：</div><div class="code block" style="max-height:180px">${esc(r.command || r.script || "")}</div>`);
+        } catch (e) { toast(e.message, true); }
+        return;
+      }
+      if (op === "revoke") {
+        if (!confirm(`吊销 ${dev.name}？会立即断网，只能重新加入。`)) return;
+        try { await api(`/api/devices/${encodeURIComponent(dev.id)}/revoke`, { method: "POST", body: "{}" }); close(); toast("已吊销"); renderView(); }
+        catch (e) { toast(e.message, true); }
+        return;
+      }
+      if (op === "del") { close(); openDeleteDevice(dev); return; }
+    };
+  });
+}
+
 function rowDevice(x) {
   const roles = (x.roles || []).map(r => `<span class="tag ${r === "gateway" || r === "relay" ? "info" : ""}">${{ node: "节点", relay: "中继", gateway: "网关", exit: "出口" }[r] || esc(r)}</span>`).join(" ");
+  const how = x.revoked_at ? "" :
+    x.via_ts ? `<span class="tag info" title="经 Tailscale 回连">TS</span>` :
+    x.path === "direct" ? `<span class="tag ok">直连</span>` :
+    x.path === "relay" ? `<span class="tag warn">中继</span>` : "";
   const path = x.revoked_at
     ? `<span class="dim">已吊销</span>`
     : x.path === "relay"
@@ -331,18 +412,14 @@ function rowDevice(x) {
       </span>
     </div>
     <div class="cell mono muted">${esc(x.mesh_ip || "—")}</div>
-    <div class="cell">${roles || `<span class="tag">节点</span>`}</div>
+    <div class="cell">${roles || `<span class="tag">节点</span>`} ${how}</div>
     <div class="cell" style="font-size:12px">${path}</div>
     <div class="cell mono dim" style="font-size:11px" title="自报：${esc(x.reported_endpoint || "-")}｜控制台实际看到：${esc(x.endpoint || "-")}${x.endpointMismatch ? "（不一致：自报地址可能是代理出口，实际以控制台看到的为准）" : ""}">${x.reported_endpoint ? esc(x.reported_endpoint) + (x.endpointMismatch ? " ⚠" : "") : `<span class="tag">经控制台</span>`}</div>
     <div class="cell dim" style="font-size:12px">${x.online ? fmtTime(x.last_seen) : x.last_seen ? fmtTime(x.last_seen) : "—"}</div>
     <div style="display:flex;gap:5px;justify-content:flex-end">
-      <button class="btn sm primary" data-dev="${esc(x.id)}" data-op="deploy" title="一键部署：生成接入命令">部署</button>
-      <button class="btn sm" data-dev="${esc(x.id)}" data-op="roles">角色</button>
-      <button class="btn sm" data-dev="${esc(x.id)}" data-op="publish">发布</button>
-      <button class="btn sm" data-dev="${esc(x.id)}" data-op="conf">配置</button>
-      <button class="btn sm" data-dev="${esc(x.id)}" data-op="rename">改名</button>
-      <button class="btn sm danger" data-dev="${esc(x.id)}" data-op="revoke">吊销</button>
-      <button class="btn sm danger" data-dev="${esc(x.id)}" data-op="del">删除</button>
+      <button class="btn sm primary" data-dev="${esc(x.id)}" data-op="deploy" title="生成接入命令">部署</button>
+      <button class="btn sm" data-dev="${esc(x.id)}" data-op="conf" title="查看状态与配置">配置</button>
+      <button class="btn sm" data-dev="${esc(x.id)}" data-op="more" title="更多操作">⋯</button>
     </div>
   </div>`;
 }
@@ -403,7 +480,11 @@ async function viewRelays(main) {
     b.onclick = async () => {
       const r = d.relays.find(x => x.id === b.dataset.relay);
       try {
-        if (b.dataset.op === "del") {
+        if (b.dataset.op === "more") {
+        openMore(dev);
+        return;
+      }
+      if (b.dataset.op === "del") {
           if (!confirm(`删除中继 ${r.name}？\n\n控制台记录会删掉；如果那台机器是用「接入命令」装的，derper 容器和 systemd 会在 60 秒内自动卸载。`)) return;
           await api(`/api/relays/${encodeURIComponent(r.id)}/delete`, { method: "POST", body: "{}" });
           toast("已删除");
@@ -789,6 +870,7 @@ async function viewSettings(main) {
       </div>
 
       <div class="card">
+        <div class="group-title">系统</div>
         <div class="card-h"><b>备份与迁移</b><span>导出 / 导入整份配置</span></div>
         <p class="dim" style="font-size:11px;margin:0 0 10px">
           导出包含：设备与对端、中继、隧道、接入密钥、全部设置（<b>不含</b>后端口令）。
@@ -867,6 +949,7 @@ async function viewSettings(main) {
         </details>
       </div>
 
+        <div class="group-title">发布到公网</div>
         <div class="card-h"><b>Cloudflare</b><span>${cf.tokenSet ? "已配置 " + esc(cf.tokenHint) : "未配置"}</span></div>
         ${guideBox({
           title: "怎么拿到 API Token 和 Account ID？（4 步）",
@@ -899,6 +982,7 @@ async function viewSettings(main) {
       ${wg ? `
 
       <div class="card">
+        <div class="group-title">对外接入</div>
         <div class="card-h"><b>兜底通道 · Tailscale</b><span>${ts.enabled ? "已启用 " + esc(ts.hint) + (ts.devices ? ` · ${ts.devices} 台已接入` : "") : "未配置"}</span></div>
         <p class="dim" style="font-size:11px;margin:0 0 8px">
           WireGuard 走 UDP，UDP 被封（公司/酒店/校园网）时连不上。填一个 Tailscale authkey，
@@ -1481,12 +1565,21 @@ function openPublish(dev) {
           <input id="pSub" placeholder="nas" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
       </div>
       <div style="display:grid;grid-template-columns:1.6fr 0.6fr;gap:10px">
-        <div><label class="dim" style="font-size:11px">目标地址（本机 mesh IP，或经网关发布的内网 IP）</label>
-          <input id="pTarget" value="${esc(dev.mesh_ip || "10.88.0.x")}" placeholder="10.0.0.109" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+        <div><label class="dim" style="font-size:11px">目标地址（多个用逗号/换行分隔，例：10.88.0.3:8000, 10.88.0.4:8000）</label>
+          <textarea id="pTarget" rows="2" placeholder="${esc(dev.mesh_ip || "10.88.0.x")}:端口" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text);font-family:var(--mono);font-size:12px">${esc(dev.mesh_ip || "")}</textarea></div>
         <div><label class="dim" style="font-size:11px">端口</label>
           <input id="pPort" placeholder="8080" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
       </div>
-      <div class="dim" style="font-size:11px">将发布为：<span class="mono" id="pPreview">—</span> → <span class="mono" id="pBackend">http://${esc(dev.mesh_ip || "10.88.0.x")}:端口</span></div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px">
+        <span class="dim" style="font-size:11px">将发布为：<span class="mono" id="pPreview">—</span></span>
+        <label class="dim" style="font-size:11px;display:flex;gap:6px;align-items:center">策略
+          <select id="pMode" style="padding:4px 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text)">
+            <option value="lb">负载均衡（多目标轮询）</option>
+            <option value="standby">主备（第一个为主，挂了自动切）</option>
+          </select>
+        </label>
+      </div>
+      <div class="mono dim" id="pBackend" style="font-size:11px;margin-top:2px"></div>
       <div id="pOut"></div>
       <div class="modal-actions">
         <button class="btn" data-act="close">关闭</button>
@@ -1507,8 +1600,10 @@ function openPublish(dev) {
     const z = zoneEl.value;
     const sub = (subEl.value || "").trim().replace(/^\.+|\.+$/g, "");
     mask.querySelector("#pPreview").textContent = z ? (sub ? `${sub}.${z}` : z) : "（先选根域名）";
-    const t = (targetEl.value || "").trim() || "10.88.0.x";
-    mask.querySelector("#pBackend").textContent = `http://${t}:${(portEl.value || "端口").trim()}`;
+    const list = (targetEl.value || "").split(/[,\n]/).map(x => x.trim()).filter(Boolean);
+    const port = (portEl.value || "端口").trim();
+    const targets = list.length ? list : ["10.88.0.x"];
+    mask.querySelector("#pBackend").textContent = targets.map(t => `http://${t}:${port}`).join("  ·  ");
   };
   subEl.oninput = preview;
   targetEl.oninput = preview;
@@ -1530,11 +1625,12 @@ function openPublish(dev) {
     if (!zone) return toast("先选一个根域名", true);
     if (!port) return toast("填端口", true);
     const hostname = sub ? `${sub}.${zone}` : zone;
-    const target = (targetEl.value || "").trim() || dev.mesh_ip;
-    const backend = `http://${target}:${port}`;
+    const list = (targetEl.value || "").split(/[,\n]/).map(x => x.trim()).filter(Boolean);
+    const targets = (list.length ? list : [dev.mesh_ip]).map(t => `http://${t}:${port}`);
+    const backend = targets.join(", ");
     out.innerHTML = '<div class="dim" style="font-size:11px;margin:8px 0">写入中…（建隧道 → 写 ingress → 改 DNS）</div>';
     try {
-      const r = await api("/api/tunnels/publish", { method: "POST", body: JSON.stringify({ hostname, backend }) });
+      const r = await api("/api/tunnels/publish", { method: "POST", body: JSON.stringify({ hostname, backend, mode: mask.querySelector("#pMode").value }) });
       out.innerHTML = `
         <div style="font-size:11.5px;margin:8px 0;line-height:1.85">
           <div>域名：<span class="mono">${esc(r.hostname)}</span> → <span class="mono">${esc(r.backend)}</span></div>
