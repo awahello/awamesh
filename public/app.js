@@ -1238,7 +1238,7 @@ function openRoles(dev) {
       <div style="display:grid;gap:8px">
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" checked disabled> <b>节点</b><span class="dim" style="font-size:11px">拿到 mesh 地址，能和其他设备互通（必选）</span></label>
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rRelay" ${has("relay") ? "checked" : ""}> <b>中继</b><span class="dim" style="font-size:11px">打洞失败时给别的节点转发（DERP）</span></label>
-        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rGateway" ${has("gateway") ? "checked" : ""}> <b>网关</b><span class="dim" style="font-size:11px">把它所在的局域网发布进 mesh（要填下面网段）</span></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rGateway" ${has("gateway") ? "checked" : ""}> <b>网关</b><span class="dim" style="font-size:11px">把它所在的局域网发布进 mesh（填 10.0.0.0/16 这种，其它设备就能直接访问 10.0.0.x）</span></label>
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rExit" ${has("exit") ? "checked" : ""}> <b>出口</b><span class="dim" style="font-size:11px">可作为全流量出口，客户端侧自选</span></label>
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rServer" ${has("server") ? "checked" : ""}> <b>服务端</b><span class="dim" style="font-size:11px">承载对外服务，配合 CF 隧道发布</span></label>
       </div>
