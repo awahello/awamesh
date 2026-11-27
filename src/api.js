@@ -8,6 +8,7 @@ import { wg, isManaged } from "./wgsrv.js";
 import { hostInCidr, clientConfig as clientConfigText } from "./wg.js";
 import { secretSetting, saveSecretSetting, seal, open as unseal } from "./secrets.js";
 import { startConnector, connectorStatus } from "./connector.js";
+import { startFrps, stopFrps, frpsStatus, frpcTemplate } from "./frps.js";
 
 const r = (n, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
 
@@ -901,6 +902,37 @@ export async function api(req, res, url, body) {
 
   if (url.pathname === "/api/mesh/heal" && method === "POST") {
     return meshHeal();
+  }
+
+
+  // frp 服务端：让没有公网/不能开端口、甚至跑不了 WG 的设备把端口借出来
+  if (url.pathname === "/api/frp" && method === "GET") {
+    return frpsStatus();
+  }
+
+  if (url.pathname === "/api/frp" && method === "POST") {
+    const act = String(body?.action || "");
+    if (act === "stop") return stopFrps();
+    try {
+      const r = startFrps({
+        port: Number(body?.port) || undefined,
+        token: String(body?.token || "").trim() || undefined,
+        rangeStart: Number(body?.rangeStart) || undefined,
+        rangeEnd: Number(body?.rangeEnd) || undefined,
+      });
+      addEvent("settings", `frps 启动 · bind ${r.port}`);
+      return { ...r, ...frpsStatus() };
+    } catch (e) {
+      return { error: e.message, ...frpsStatus() };
+    }
+  }
+
+  // 设备侧 frpc 配置模板
+  if (url.pathname === "/api/frp/client" && method === "GET") {
+    const host = String(url.searchParams.get("host") || "").trim();
+    const base = host || (effectiveEndpoint(req.headers.host || "").split(":")[0] || "");
+    const cfg = frpcTemplate(base, Number(url.searchParams.get("local")) || 51820, Number(url.searchParams.get("remote")) || 51820);
+    return { host: base, config: cfg };
   }
 
   if (url.pathname === "/api/tunnels/probe" && method === "POST") {

@@ -18,7 +18,12 @@ ARG TARGETARCH=amd64
 RUN apk add --no-cache su-exec wireguard-tools iproute2 iptables curl \
  && curl -fsSL -o /usr/local/bin/cloudflared \
       "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH}" \
- && chmod +x /usr/local/bin/cloudflared
+ && chmod +x /usr/local/bin/cloudflared \
+ && curl -fsSL -o /tmp/frp.tgz "https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_linux_${TARGETARCH}.tar.gz" \
+ && tar -xzf /tmp/frp.tgz -C /tmp \
+ && mv /tmp/frp_*/frps /usr/local/bin/frps \
+ && chmod +x /usr/local/bin/frps \
+ && rm -rf /tmp/frp.tgz /tmp/frp_*
 
 COPY docker/entrypoint.sh /app/docker/entrypoint.sh
 RUN chmod +x /app/docker/entrypoint.sh \

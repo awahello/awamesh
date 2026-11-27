@@ -469,6 +469,33 @@ async function viewTunnels(main) {
       </div>
       <div id="cfcLog" class="code" style="margin-top:8px;max-height:150px;overflow:auto"></div>
     </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-h"><b>frp 服务端</b><span id="frpState">读取中…</span></div>
+      <p class="dim" style="font-size:11px;margin:0 0 8px">
+        给「没有公网 / 不能开端口 / 跑不了 WireGuard」的设备用：设备上跑 frpc，把它的端口借这台机器暴露出来，
+        控制台学到的地址就会变成这台 VPS，mesh 直接通。普通路由器只要能跑 frpc 就行。
+      </p>
+      <div style="display:grid;grid-template-columns:0.8fr 1fr 1.4fr;gap:10px">
+        <div><label class="dim" style="font-size:11px">bind 端口</label>
+          <input id="frpPort" value="7000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text)"></div>
+        <div><label class="dim" style="font-size:11px">允许端口段</label>
+          <div style="display:flex;gap:6px;align-items:center;margin:4px 0">
+            <input id="frpFrom" value="51820" style="width:100%;padding:7px 8px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text)">
+            <span class="dim">-</span>
+            <input id="frpTo" value="51900" style="width:100%;padding:7px 8px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text)">
+          </div></div>
+        <div><label class="dim" style="font-size:11px">auth token（留空自动生成）</label>
+          <input id="frpToken" placeholder="留空自动生成" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text)"></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn primary" id="frpStart">启动</button>
+        <button class="btn" id="frpStop">停止</button>
+        <button class="btn" id="frpCfg">设备侧 frpc.toml</button>
+      </div>
+      <div id="frpOut" class="dim" style="font-size:11px;margin-top:8px"></div>
+      <div id="frpLog" class="code block" style="margin-top:8px;max-height:130px"></div>
+    </div>
     ${d.cfEnabled ? "" : `<div class="card" style="margin-bottom:12px;border-color:var(--info)">
       <b>还没连接 Cloudflare</b>
       <span class="muted"> · 去「设置 → Cloudflare」填 Token（和 Account ID），点「保存」再「测试连接」，然后回这一页点右上「刷新」。</span>
@@ -540,6 +567,46 @@ async function viewTunnels(main) {
       main.querySelector("#tunOut").innerHTML = `已切换为 <b>${esc(r.name)}</b>${r.connector && r.connector.started ? "，连接器已重启" : r.connector && r.connector.error ? "，连接器启动失败：" + esc(r.connector.error) : ""}`;
       setTimeout(renderView, 1200);
     } catch (e) { main.querySelector("#tunOut").textContent = e.message; }
+  };
+
+  const frpRefresh = async () => {
+    const st = await api("/api/frp").catch(() => null);
+    const el = main.querySelector("#frpState");
+    if (!st || !el) return;
+    el.innerHTML = st.running
+      ? `<span style="color:var(--ok)">运行中 · :${st.port}</span>`
+      : '<span class="dim">未运行</span>';
+    main.querySelector("#frpPort").value = st.port || 7000;
+    main.querySelector("#frpFrom").value = st.rangeStart || 51820;
+    main.querySelector("#frpTo").value = st.rangeEnd || 51900;
+    main.querySelector("#frpLog").textContent = (st.lines || []).join("\n") || "（暂无日志）";
+  };
+  frpRefresh();
+  main.querySelector("#frpStart").onclick = async () => {
+    const out = main.querySelector("#frpOut");
+    out.textContent = "启动中…";
+    try {
+      const r = await api("/api/frp", { method: "POST", body: JSON.stringify({
+        action: "start",
+        port: Number(main.querySelector("#frpPort").value),
+        token: main.querySelector("#frpToken").value.trim(),
+        rangeStart: Number(main.querySelector("#frpFrom").value),
+        rangeEnd: Number(main.querySelector("#frpTo").value),
+      })});
+      if (r.error) { out.innerHTML = `<span style="color:var(--bad)">${esc(r.error)}</span>`; return; }
+      out.innerHTML = `已启动 · bind <b>${r.port}</b> · 允许端口 ${r.rangeStart}-${r.rangeEnd}`;
+      setTimeout(frpRefresh, 1500);
+    } catch (e) { out.textContent = e.message; }
+  };
+  main.querySelector("#frpStop").onclick = async () => {
+    await api("/api/frp", { method: "POST", body: JSON.stringify({ action: "stop" }) }).catch(() => {});
+    toast("已停止"); frpRefresh();
+  };
+  main.querySelector("#frpCfg").onclick = async () => {
+    try {
+      const r = await api("/api/frp/client");
+      showCode("设备侧 frpc.toml", r.config, `放到设备的 /etc/frp/frpc.toml，然后 frpc -c /etc/frp/frpc.toml（服务器：${r.host}）`);
+    } catch (e) { toast(e.message, true); }
   };
   const cfcRefresh = async () => {
     const st = await api("/api/tunnel/connector").catch(() => null);
