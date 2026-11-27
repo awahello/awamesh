@@ -161,7 +161,7 @@ export function toRows(items, db) {
       t.name,
       t.hostname,
       t.backend,
-      t.connectors > 0 ? "unknown" : "down",
+      t.connectors > 0 ? "ok" : "down",
       null,
       now,
       /^localhost|^127\./.test(t.backend) ? 1 : 0
