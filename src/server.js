@@ -286,7 +286,8 @@ while read -r kind a b c _rest; do
 # 保留 /tmp/awa.state 方便排查（每次覆盖，不占空间）
 
 # 清理控制台不再下发的 /32 对端（例如关闭 P2P 后）。绝不动 hub 那条（allowed-ips 含 /24）
-wg show "\$IFACE" allowed-ips 2>/dev/null | while read -r pk ips; do
+# 只在拿到 200 时才清理，避免控制台临时不可用时把对端删光
+[ "$CODE" = "200" ] && wg show "\$IFACE" allowed-ips 2>/dev/null | while read -r pk ips; do
   case "\$ips" in
     */24|*/16|0.0.0.0/0) continue ;;
   esac
