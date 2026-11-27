@@ -496,8 +496,8 @@ async function viewTunnels(main) {
   main.querySelectorAll("[data-tun]").forEach(b => {
     b.onclick = async () => {
       if (!confirm("从面板移除这条记录？（会同时把该域名的 ingress 从 awamesh 隧道里删掉）")) return;
-      await api(`/api/tunnels/${encodeURIComponent(b.dataset.tun)}/delete`, { method: "POST", body: "{}" });
-      toast("已删除");
+      const r = await api(`/api/tunnels/${encodeURIComponent(b.dataset.tun)}/delete`, { method: "POST", body: "{}" });
+      toast(r.dnsRemoved ? "已删除（ingress + DNS 都已清理）" : "已删除（DNS 未找到，可能需手动清理）");
       renderView();
     };
   });

@@ -99,6 +99,7 @@ if [ -f /etc/config/network ] && command -v uci >/dev/null 2>&1; then
   uci set network.awa0.proto='wireguard'
   uci set network.awa0.private_key="$PRIV"
   uci add_list network.awa0.addresses="$ADDR"
+  uci set network.awa0.listen_port='51820'   # 固定端口，方便在 WAN 放行
   [ -n "$MTU_C" ] && uci set network.awa0.mtu="$MTU_C"
 
   uci set network.wgawa0=wireguard_awa0
@@ -133,6 +134,14 @@ if [ -f /etc/config/network ] && command -v uci >/dev/null 2>&1; then
     uci set firewall.lan_awamesh=forwarding
     uci set firewall.lan_awamesh.src='lan'
     uci set firewall.lan_awamesh.dest='awamesh'
+    # WAN 入站放行：节点是被动接收方，控制台/别的节点要能主动连进来
+    uci -q delete firewall.awamesh_wan >/dev/null 2>&1 || true
+    uci set firewall.awamesh_wan=rule
+    uci set firewall.awamesh_wan.name='Allow-awamesh'
+    uci set firewall.awamesh_wan.src='wan'
+    uci set firewall.awamesh_wan.proto='udp'
+    uci set firewall.awamesh_wan.dest_port='51820'
+    uci set firewall.awamesh_wan.target='ACCEPT'
     uci commit firewall
   fi
 
@@ -272,7 +281,8 @@ case "$CODE" in
       uci commit network >/dev/null 2>&1 || true
       if [ -f /etc/config/firewall ]; then
         uci -q delete firewall.awamesh >/dev/null 2>&1 || true
-        uci -q delete firewall.awamesh_lan >/dev/null 2>&1 || true
+        uci -q delete firewall.awamesh_wan >/dev/null 2>&1 || true
+      uci -q delete firewall.awamesh_lan >/dev/null 2>&1 || true
         uci -q delete firewall.lan_awamesh >/dev/null 2>&1 || true
         uci commit firewall >/dev/null 2>&1 || true
         [ -x /etc/init.d/firewall ] && /etc/init.d/firewall reload >/dev/null 2>&1 || true

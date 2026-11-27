@@ -1528,6 +1528,7 @@ ingress:
 
     // 面板建的：同时把这条 ingress 从隧道里摘掉，别留悬空规则
     let removed = false;
+    let dnsRemoved = false;
     const m = /^cf_([0-9a-f-]{36})_(.+)$/.exec(row.id);
     const account = cfAccount();
     if (m && account && cfEnabled()) {
@@ -1542,11 +1543,25 @@ ingress:
       } catch (e) {
         addEvent("tunnel", `删除 ${row.hostname} 时改 ingress 失败：${e.message}`);
       }
+
+      // 顺带把 DNS 记录也删掉，否则域名还指着一个没有 ingress 的隧道
+      try {
+        const zone = await zoneFor(row.hostname);
+        if (zone) {
+          const recs = await cf(`/zones/${zone.id}/dns_records?name=${row.hostname}`).catch(() => []);
+          for (const r of recs || []) {
+            await cf(`/zones/${zone.id}/dns_records/${r.id}`, { method: "DELETE" }).catch(() => {});
+          }
+          dnsRemoved = true;
+        }
+      } catch (e) {
+        addEvent("tunnel", `删除 ${row.hostname} 时删 DNS 失败：${e.message}`);
+      }
     }
 
     db.prepare("DELETE FROM tunnels WHERE id = ?").run(seg[1]);
     addEvent("tunnel", `删除隧道 ${row.hostname}${removed ? "（已同步移除 ingress）" : ""}`);
-    return { ok: true, ingressRemoved: removed };
+    return { ok: true, ingressRemoved: removed, dnsRemoved };
   }
 
   if (url.pathname === "/api/events" && method === "GET") {
