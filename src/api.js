@@ -294,6 +294,28 @@ export async function meshHeal() {
 }
 
 
+
+/** 清理悬空 ingress：把隧道里「数据库已经没这条」的 hostname 摘掉 */
+export async function gcTunnelIngress(accountId, tunnelId, req) {
+  const cur = await cf(`/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`);
+  const ingress = cur?.config?.ingress || [];
+  const known = new Set(db.prepare("SELECT hostname FROM tunnels").all().map(r => String(r.hostname).toLowerCase()));
+  const keep = [];
+  const dropped = [];
+  for (const r of ingress) {
+    if (!r.hostname) continue;                 // 最后那条 http_status:404 之类
+    if (known.has(String(r.hostname).toLowerCase())) keep.push(r);
+    else dropped.push(r.hostname);
+  }
+  if (!dropped.length) return { dropped: [], rules: ingress };
+  await cf(`/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
+    method: "PUT",
+    body: JSON.stringify({ config: { ingress: [...keep, { service: "http_status:404" }] } }),
+  });
+  addEvent("tunnel", `清理悬空 ingress：${dropped.join(", ")}`);
+  return { dropped, rules: keep };
+}
+
 /** 从容器内探活每条隧道的后端（TCP 连接），把「待检查」变成真实状态 */
 export async function probeTunnels() {
   const net = await import("node:net");
@@ -1008,6 +1030,14 @@ export async function api(req, res, url, body) {
     const base = host || (effectiveEndpoint(req.headers.host || "").split(":")[0] || "");
     const cfg = frpcTemplate(base, Number(url.searchParams.get("local")) || 51820, Number(url.searchParams.get("remote")) || 51820);
     return { host: base, config: cfg };
+  }
+
+  if (url.pathname === "/api/tunnels/gc" && method === "POST") {
+    if (!cfEnabled() || !cfAccount()) throw new Error("先配好 Cloudflare Token 和 Account ID");
+    const account = cfAccount();
+    const tun = await pickTunnel(account, setting("cf_tunnel_name") || "awamesh", setting("cf_tunnel_id") || "");
+    const r = await gcTunnelIngress(account, tun.id, req);
+    return { ok: true, tunnelName: tun.name, dropped: r.dropped };
   }
 
   if (url.pathname === "/api/tunnels/probe" && method === "POST") {
@@ -1776,6 +1806,9 @@ ingress:
     }
 
     db.prepare("DELETE FROM tunnels WHERE id = ?").run(seg[1]);
+    if (m && account && cfEnabled()) {
+      try { await gcTunnelIngress(account, m[1], req); } catch { /* ignore */ }
+    }
     addEvent("tunnel", `删除隧道 ${row.hostname}${removed ? "（已同步移除 ingress）" : ""}`);
     return { ok: true, ingressRemoved: removed, dnsRemoved };
   }

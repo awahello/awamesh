@@ -166,6 +166,7 @@ async function viewOverview(main, silent) {
     <div class="head">
       <div><h1>概览</h1><div class="sub">${d.devices.total} 台设备 · ${d.devices.online} 在线 · ${d.relays} 个中继 · ${d.tunnels.total} 条隧道${S.backend === "mock" ? " · 演示数据" : ""}</div></div>
       <div class="head-actions">
+        <button class="btn" data-act="gc">清理悬空规则</button>
         <button class="btn" data-act="refresh">刷新</button>
         <button class="btn primary" data-act="join">添加设备</button>
       </div>
@@ -481,6 +482,7 @@ async function viewRelays(main) {
       <div><h1>中继节点</h1><div class="sub">${d.relays.filter(r => r.enabled).length} 个已启用（含内置中转 ${d.relays.filter(r => r.kind === "builtin").length}）· DERP 端口 ${d.relayPort}</div></div>
       <div class="head-actions">
         <button class="btn" data-act="map">中继地图</button>
+        <button class="btn" data-act="gc">清理悬空规则</button>
         <button class="btn" data-act="refresh">刷新</button>
         <button class="btn primary" data-act="add">添加中继</button>
       </div>
@@ -566,6 +568,7 @@ async function viewTunnels(main) {
       <div><h1>Cloudflare 隧道</h1><div class="sub">${d.tunnels.length} 个域名 · ${d.cfEnabled ? "已配置 API Token" : "未配置 API Token（仅本地数据）"}</div></div>
       <div class="head-actions">
         <button class="btn" data-act="sync" ${d.cfEnabled ? "" : "disabled title='未配置 AWA_CF_TOKEN'"}>从 Cloudflare 同步</button>
+        <button class="btn" data-act="gc">清理悬空规则</button>
         <button class="btn" data-act="refresh">刷新</button>
         <button class="btn primary" data-act="add">添加隧道</button>
       </div>
@@ -662,6 +665,14 @@ async function viewTunnels(main) {
     } catch { /* 探活失败不打扰 */ }
   })();
 
+  const gcBtn = main.querySelector('[data-act="gc"]');
+  if (gcBtn) gcBtn.onclick = async () => {
+    try {
+      const r = await api("/api/tunnels/gc", { method: "POST", body: "{}" });
+      toast(r.dropped && r.dropped.length ? `已清理：${r.dropped.join(", ")}` : "没有悬空规则");
+      renderView();
+    } catch (e) { toast(e.message, true); }
+  };
   main.querySelector('[data-act="refresh"]').onclick = renderView;
   main.querySelector('[data-act="add"]').onclick = openAddTunnel;
   const go = main.querySelector('[data-act="goSettings"]');
@@ -806,6 +817,14 @@ async function viewEvents(main) {
     } catch { /* 探活失败不打扰 */ }
   })();
 
+  const gcBtn = main.querySelector('[data-act="gc"]');
+  if (gcBtn) gcBtn.onclick = async () => {
+    try {
+      const r = await api("/api/tunnels/gc", { method: "POST", body: "{}" });
+      toast(r.dropped && r.dropped.length ? `已清理：${r.dropped.join(", ")}` : "没有悬空规则");
+      renderView();
+    } catch (e) { toast(e.message, true); }
+  };
   main.querySelector('[data-act="refresh"]').onclick = renderView;
 }
 
