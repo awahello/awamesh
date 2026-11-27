@@ -441,6 +441,21 @@ async function viewTunnels(main) {
       </div>
     </div>
 
+
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-h"><b>使用哪条隧道</b><span>${esc(d.tunnelName || "awamesh")}</span></div>
+      <p class="dim" style="font-size:11px;margin:0 0 8px">
+        发布一律写入这里选中的那条；没选就优先用「已有连接器」的隧道。切换后连接器会自动换 token 重启。
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="tunPick" style="flex:1;min-width:240px;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text)">
+          <option value="">读取中…</option>
+        </select>
+        <button class="btn primary" id="tunApply">切换到这条</button>
+        <button class="btn" id="tunReload">重新读取</button>
+      </div>
+      <div id="tunOut" class="dim" style="font-size:11px;margin-top:6px"></div>
+    </div>
     <div class="card" style="margin-bottom:12px">
       <div class="card-h"><b>隧道连接器</b><span id="cfcState">读取中…</span></div>
       <p class="dim" style="font-size:11px;margin:0 0 8px">
@@ -487,6 +502,30 @@ async function viewTunnels(main) {
     };
   });
 
+
+  const tunPick = main.querySelector("#tunPick");
+  const tunLoad = async () => {
+    const r = await api("/api/cf/tunnels").catch(() => ({ tunnels: [], current: "" }));
+    if (!r.tunnels.length) {
+      tunPick.innerHTML = '<option value="">（读不到隧道：检查 Token 权限）</option>';
+      return;
+    }
+    tunPick.innerHTML = r.tunnels.map(t =>
+      `<option value="${esc(t.id)}" ${t.id === r.current ? "selected" : ""}>${esc(t.name)} · ${t.connections > 0 ? t.connections + " 个连接器" : "无连接器"}${t.status ? " · " + esc(t.status) : ""}</option>`
+    ).join("");
+  };
+  tunLoad();
+  main.querySelector("#tunReload").onclick = tunLoad;
+  main.querySelector("#tunApply").onclick = async () => {
+    const id = tunPick.value;
+    if (!id) return;
+    main.querySelector("#tunOut").textContent = "切换中…（会重启连接器）";
+    try {
+      const r = await api("/api/cf/tunnel", { method: "POST", body: JSON.stringify({ id }) });
+      main.querySelector("#tunOut").innerHTML = `已切换为 <b>${esc(r.name)}</b>${r.connector && r.connector.started ? "，连接器已重启" : r.connector && r.connector.error ? "，连接器启动失败：" + esc(r.connector.error) : ""}`;
+      setTimeout(renderView, 1200);
+    } catch (e) { main.querySelector("#tunOut").textContent = e.message; }
+  };
   const cfcRefresh = async () => {
     const st = await api("/api/tunnel/connector").catch(() => null);
     const el = main.querySelector("#cfcState");
@@ -1031,7 +1070,7 @@ function showCode(title, code, hint) {
     <div class="modal">
       <h3>${esc(title)}</h3>
       <div class="sub">${esc(hint || "")}</div>
-      <div class="code" style="max-height:44vh">${esc(code)}</div>
+      <div class="code block">${esc(code)}</div>
       <div class="modal-actions">
         <button class="btn" data-act="copy">复制</button>
         <button class="btn primary" data-act="close">关闭</button>

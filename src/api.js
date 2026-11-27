@@ -1,7 +1,7 @@
 import { cfg } from "./config.js";
 import { db, now, setting, listRelays, listTunnels, listEvents, addEvent } from "./db.js";
 import { backend } from "./backends/index.js";
-import { cfApi as cf, cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows, ensureTunnel, pickTunnel, publishIngress, zoneFor, pointDns, tunnelToken, listZones } from "./cloudflare.js";
+import { cfApi as cf, cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows, ensureTunnel, pickTunnel, listTunnelsRaw, publishIngress, zoneFor, pointDns, tunnelToken, listZones } from "./cloudflare.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { wg, isManaged } from "./wgsrv.js";
@@ -1222,7 +1222,7 @@ ingress:
   }
 
   if (url.pathname === "/api/tunnels" && method === "GET") {
-    return { tunnels: listTunnels(), cfEnabled: cfEnabled() };
+    return { tunnels: listTunnels(), cfEnabled: cfEnabled(), tunnelName: setting("cf_tunnel_name") || setting("cf_tunnel_id") || "" };
   }
 
 
@@ -1274,6 +1274,41 @@ ingress:
     setting("cf_tunnel_name", name || "awamesh");
     addEvent("settings", `Cloudflare 隧道名改为 ${name || "awamesh"}`);
     return { ok: true, name: name || "awamesh" };
+  }
+
+
+  if (url.pathname === "/api/cf/tunnels" && method === "GET") {
+    if (!cfEnabled() || !cfAccount()) return { tunnels: [], current: setting("cf_tunnel_id") || "" };
+    const tunnels = await listTunnelsRaw(cfAccount()).catch(() => []);
+    return { tunnels, current: setting("cf_tunnel_id") || "" };
+  }
+
+  if (url.pathname === "/api/cf/tunnel" && method === "POST") {
+    if (!cfEnabled() || !cfAccount()) throw new Error("先配好 Cloudflare Token 和 Account ID");
+    const id = String(body?.id || "").trim();
+    if (!id) throw new Error("没有选隧道");
+    const all = await listTunnelsRaw(cfAccount());
+    const hit = all.find(t => t.id === id);
+    if (!hit) throw new Error("这条隧道不在你的账户里");
+    setting("cf_tunnel_id", id);
+    setting("cf_tunnel_name", hit.name);
+
+    // 换隧道后把连接器切过去（token 不同，必须重启）
+    let connector = {};
+    try {
+      const token = await tunnelToken(cfAccount(), id);
+      if (token) {
+        const { stopConnector, startConnector } = await import("./connector.js");
+        stopConnector();
+        await startConnector(token);
+        saveSecretSetting("cf_tunnel_token", token);
+        connector = { started: true };
+      }
+    } catch (e) {
+      connector = { error: e.message };
+    }
+    addEvent("settings", `Cloudflare 隧道切换为 ${hit.name}`);
+    return { ok: true, id, name: hit.name, connector };
   }
 
   if (url.pathname === "/api/cf/zones" && method === "GET") {
@@ -1335,7 +1370,7 @@ ingress:
 
     // 全站共用一个隧道：默认叫 awamesh，可在设置里改成你已有的隧道名（不会新建第二个）
     const tunnelName = String(body?.tunnelName || setting("cf_tunnel_name") || "awamesh").trim();
-    const tun = await pickTunnel(account, tunnelName);
+    const tun = await pickTunnel(account, tunnelName, setting("cf_tunnel_id") || "");
     const rules = await publishIngress(account, tun.id, hostname, backend);
 
     let dns = "skipped";
