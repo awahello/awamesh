@@ -3,6 +3,7 @@ import { db, now, setting, listRelays, listTunnels, listEvents, addEvent } from 
 import { backend } from "./backends/index.js";
 import { cfEnabled, cfToken, setCfToken, cfAccount, setCfAccount, listAccounts, pingAccount, listTunnels as cfListTunnels, toRows, ensureTunnel, publishIngress, zoneFor, pointDns, tunnelToken } from "./cloudflare.js";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import { wg, isManaged } from "./wgsrv.js";
 import { hostInCidr, clientConfig as clientConfigText } from "./wg.js";
 import { secretSetting, saveSecretSetting, seal, open as unseal } from "./secrets.js";
@@ -148,7 +149,7 @@ export function peersForNode(nodeToken) {
 
   // P2P 关闭（全局或单台）：不下发 /32 对端，流量自然会落到控制台的 10.88.0.0/24 上，
   // 由控制台转发 —— 打洞总是失败的网络（对称 NAT / 代理）靠这个保证互通。
-  const p2pGlobal = setting("p2p") !== "0";
+  const p2pGlobal = setting("p2p") === "1";   // 默认关闭：保证所有设备互通，直连是可选优化
 
   const peers = rows
     .filter(r => r.id !== self.id && p2pGlobal && r.p2p !== 0)
@@ -313,6 +314,16 @@ export async function wgCheck() {
   }
 
   const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (isManaged()) {
+    try {
+      const fwd = fs.readFileSync("/proc/sys/net/ipv4/ip_forward", "utf8").trim();
+      if (fwd !== "1") {
+        issues.push("内核没有开启 ip_forward，节点之间经控制台转发会失败");
+        hints.push("compose 里加 sysctls: { net.ipv4.ip_forward: \"1\" } 后 up -d --force-recreate");
+      }
+    } catch { /* 读不到就算了 */ }
+  }
+
   if (!isManaged() && uid !== null && uid !== 0) {
     issues.push(`进程运行在非 root（uid=${uid}），无法获得 NET_ADMIN`);
     hints.push("容器入口默认以 root 跑；如果 compose 里写了 AWA_WG_ENABLE=0 就会降权到 node，删掉它");

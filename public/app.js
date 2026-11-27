@@ -246,7 +246,7 @@ async function viewDevices(main) {
       <b>还没有设备</b><span class="muted"> · 点右上角「添加设备」生成一条授权命令，粘到 OpenWrt / Linux 上以 root 执行即可；四步图解在「设置 → 快速上手」。</span>
     </div>` : ""}
     <div class="devices">
-      <div class="row head"><div>设备</div><div>Mesh 地址</div><div>角色</div><div>路径</div><div>出口地址</div><div>最后在线</div><div></div></div>
+      <div class="row head"><div>设备</div><div>Mesh 地址</div><div>角色</div><div>路径</div><div>出口地址</div><div>最后在线</div><div>操作</div></div>
       <div class="rows">
         ${d.devices.map(x => rowDevice(x)).join("") || `<div class="empty">没有匹配的设备</div>`}
       </div>
@@ -561,7 +561,7 @@ function guideBox({ title, steps, notes = [], href, hrefText }) {
 async function viewSettings(main) {
   const s = await api("/api/settings");
   const wg = S.backend === "wg" ? await api("/api/wg/profile") : null;
-  if (wg) S.p2p = wg.p2p !== false;
+  if (wg) S.p2p = wg.p2p === true;
   const cf = await api("/api/cf/profile").catch(() => ({ enabled: false, tokenSet: false, account: "" }));
   const ts = await api("/api/ts/profile").catch(() => ({ enabled: false, hint: "", loginServer: "" }));
   const upd = await api("/api/update/check").catch(() => null);
@@ -732,7 +732,7 @@ async function viewSettings(main) {
           <button class="btn ${wg.mode === "custom" ? "" : "primary"}" data-mode="builtin">自动 · 部署端当服务端</button>
           <button class="btn ${wg.mode === "custom" ? "primary" : ""}" data-mode="custom">自定义 · 中继 / OpenWrt / 端口映射</button>
           <button class="btn" id="wgCheck">检测连通性</button>
-          <button class="btn" id="toggleP2P">${(S.p2p === false) ? "开启 P2P 直连" : "关闭 P2P（全走控制台）"}</button>
+          <button class="btn" id="toggleP2P">${S.p2p ? "关闭 P2P（全走控制台）" : "开启 P2P 直连"}</button>
         </div>
         <div id="wgCheckOut"></div>
 
@@ -818,7 +818,7 @@ async function viewSettings(main) {
 
     main.querySelector("#toggleP2P").onclick = async () => {
     try {
-      const on = S.p2p === false;
+      const on = !S.p2p;
       await api("/api/settings/p2p", { method: "POST", body: JSON.stringify({ enabled: on }) });
       toast(on ? "已开启 P2P（60 秒内生效）" : "已关闭 P2P：节点间流量经控制台转发（60 秒内生效）");
       renderView();

@@ -284,6 +284,16 @@ while read -r kind a b c _rest; do
       esac
     done < /tmp/awa.state
 # 保留 /tmp/awa.state 方便排查（每次覆盖，不占空间）
+
+# 清理控制台不再下发的 /32 对端（例如关闭 P2P 后）。绝不动 hub 那条（allowed-ips 含 /24）
+wg show "\$IFACE" allowed-ips 2>/dev/null | while read -r pk ips; do
+  case "\$ips" in
+    */24|*/16|0.0.0.0/0) continue ;;
+  esac
+  if ! grep -q "^PEER \$pk " /tmp/awa.state 2>/dev/null; then
+    wg set "\$IFACE" peer "\$pk" remove 2>/dev/null || true
+  fi
+done
 PEERS
   chmod +x "$BINDIR/awa-peers"
 
