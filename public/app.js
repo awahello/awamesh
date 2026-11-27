@@ -1226,8 +1226,13 @@ async function openKeyModal() {
       mask.querySelector("#kOut").innerHTML = `
         <div class="dim" style="font-size:11px">在目标机器上执行：</div>
         <div class="code">${esc(cmd)}</div>
-        <div class="dim" style="font-size:11px">密钥只显示这一次（${esc(r.tag)}）</div>`;
+        <div class="dim" style="font-size:11px">密钥只显示这一次（${esc(r.tag)}）</div>
+        <div class="dim" style="font-size:11px;margin-top:10px">
+          Windows / 手机 / 路由器固件（只能用 WireGuard 客户端，不能跑 shell）？
+          <a href="#" id="kWin">改用「导入配置」方式生成 →</a>
+        </div>`;
       mask.querySelector('[data-act="gen"]').textContent = "再生成一个";
+      mask.querySelector("#kWin").onclick = (ev) => { ev.preventDefault(); mask.remove(); openWgCreate(); };
     } catch (e) { toast(e.message, true); }
   };
 }
@@ -1257,7 +1262,10 @@ async function openWgCreate() {
     try {
       const r = await api("/api/devices", { method: "POST", body: JSON.stringify({ name: mask.querySelector("#wgName").value }) });
       mask.querySelector("#wgOut").innerHTML = `
-        <div class="dim" style="font-size:11px">1. 客户端配置（WireGuard App / wg-quick）</div>
+        <div class="dim" style="font-size:11px">1. 客户端配置（Windows / 手机 / 路由器通用）</div>
+        <div class="dim" style="font-size:11px;margin:6px 0">
+          Windows：装 <b>WireGuard 官方客户端</b>（wireguard.com/install）→「添加空隧道」→ 把下面这段整块粘进去 → 保存 → 启用
+        </div>
         <div class="code">${esc(r.clientConfig)}</div>
         <div class="dim" style="font-size:11px">2. 服务端要点（加到 WireGuard 服务端的配置里，然后重启接口）</div>
         <div class="code">${esc(r.serverPeer)}</div>
