@@ -297,7 +297,8 @@ export async function meshHeal() {
 /** 从容器内探活每条隧道的后端（TCP 连接），把「待检查」变成真实状态 */
 export async function probeTunnels() {
   const net = await import("node:net");
-  const rows = db.prepare("SELECT * FROM tunnels").all();
+  // 只探活「面板发布」的：CF 手动的隧道可能跑在别的机器上，localhost 是相对那台机器的
+  const rows = db.prepare("SELECT * FROM tunnels WHERE source = 'awamesh'").all();
   const t = now();
   const result = [];
 

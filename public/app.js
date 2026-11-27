@@ -637,8 +637,10 @@ async function viewTunnels(main) {
           <div class="row" style="grid-template-columns:2fr 1.4fr 0.8fr 0.8fr 0.6fr">
             <div class="cell"><b>${esc(t.hostname)}</b> ${t.source === "awamesh" ? '<span class="tag info" title="由 awamesh 发布（ingress 写的是 mesh 地址）">部署端</span>' : '<span class="tag" title="你在 Cloudflare 后台手动配置的，awamesh 只读">CF 手动</span>'}</div>
             <div class="cell mono muted">${esc(t.backend)}</div>
-            <div class="cell" style="font-size:12px"><span class="dot ${t.health === "ok" ? "ok" : t.health === "down" ? "bad" : "warn"}"></span> ${t.health === "ok" ? "正常" : t.health === "down" ? "后端不通" : "待检查"}</div>
-            <div class="cell dim" style="font-size:12px">${fmtTime(t.last_check)}</div>
+            <div class="cell" style="font-size:12px">${t.source !== "awamesh"
+              ? `<span class="tag" title="这条由别的机器/后台手工维护，面板不替它探活">外部隧道</span>`
+              : `<span class="dot ${t.health === "ok" ? "ok" : t.health === "down" ? "bad" : "warn"}"></span> ${t.health === "ok" ? "正常" : t.health === "down" ? "后端不通" : "待检查"}`}</div>
+            <div class="cell dim" style="font-size:12px">${t.source !== "awamesh" ? "—" : fmtTime(t.last_check)}</div>
             <div style="text-align:right">${t.source === "awamesh"
               ? `<button class="btn sm danger" data-tun="${esc(t.id)}">删除</button>`
               : `<button class="btn sm" disabled title="手动在 Cloudflare 建的：请到 CF 后台修改，面板不改动它">只读</button>`}</div>
@@ -1575,7 +1577,8 @@ async function openKeyModal() {
   const onKey = (e) => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
-  mask.querySelector('[data-act="win"]').onclick = () => { mask.remove(); openWgCreate(); };
+  const winBtn = mask.querySelector('[data-act="win"]');
+  if (winBtn) winBtn.onclick = () => { mask.remove(); openWgCreate(); };
   mask.querySelector('[data-act="gen"]').onclick = async () => {
     try {
       const r = await api("/api/keys", {
@@ -1592,7 +1595,6 @@ async function openKeyModal() {
           <button class="btn sm" id="kWin">Windows / 手机 / 路由器 → 生成可导入的配置</button>
         </div>`;
       mask.querySelector('[data-act="gen"]').textContent = "再生成一个";
-        mask.querySelector('[data-act="win"]').onclick = () => { mask.remove(); openWgCreate(); };
       mask.querySelector("#kWin").onclick = (ev) => { ev.preventDefault(); mask.remove(); openWgCreate(); };
     } catch (e) { toast(e.message, true); }
   };
@@ -1611,7 +1613,7 @@ async function openWgCreate() {
       <div id="wgOut"></div>
       <div class="modal-actions">
         <button class="btn" data-act="close">关闭</button>
-        <button class="btn" data-act="win">Windows / 手机 / 路由器</button>
+        <button class="btn" data-act="linux">Linux / OpenWrt 用命令</button>
         <button class="btn primary" data-act="gen">生成</button>
       </div>
     </div>`;
@@ -1620,6 +1622,8 @@ async function openWgCreate() {
   const onKey = (e) => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
+  const lb = mask.querySelector('[data-act="linux"]');
+  if (lb) lb.onclick = () => { mask.remove(); openJoinCommand(); };
   mask.querySelector('[data-act="gen"]').onclick = async () => {
     try {
       const r = await api("/api/devices", { method: "POST", body: JSON.stringify({ name: mask.querySelector("#wgName").value }) });
@@ -1944,6 +1948,7 @@ async function openJoinCommand() {
       <div id="joinOut"></div>
       <div class="modal-actions">
         <button class="btn" data-act="close">关闭</button>
+        <button class="btn" data-act="win">Windows / 手机 / 路由器</button>
         <button class="btn primary" data-act="gen">生成命令</button>
       </div>
     </div>`;
@@ -1952,7 +1957,8 @@ async function openJoinCommand() {
   const onKey = (e) => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
   mask.querySelector('[data-act="close"]').onclick = close;
-  mask.querySelector('[data-act="win"]').onclick = () => { mask.remove(); openWgCreate(); };
+  const winBtn = mask.querySelector('[data-act="win"]');
+  if (winBtn) winBtn.onclick = () => { mask.remove(); openWgCreate(); };
   mask.querySelector('[data-act="gen"]').onclick = async () => {
     try {
       const r = await api("/api/keys", {
