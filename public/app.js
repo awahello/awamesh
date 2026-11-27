@@ -332,7 +332,7 @@ function rowDevice(x) {
     <div class="cell mono muted">${esc(x.mesh_ip || "—")}</div>
     <div class="cell">${roles || `<span class="tag">节点</span>`}</div>
     <div class="cell" style="font-size:12px">${path}</div>
-    <div class="cell mono dim" style="font-size:11px" title="${esc(x.reported_endpoint || x.endpoint || "无公网地址")}${x.endpointMismatch ? " · 与控制台看到的源地址不一致（可能有代理/多层 NAT）" : ""}">${x.reported_endpoint ? esc(x.reported_endpoint) + (x.endpointMismatch ? " ⚠" : "") : `<span class="tag">经控制台</span>`}</div>
+    <div class="cell mono dim" style="font-size:11px" title="自报：${esc(x.reported_endpoint || "-")}｜控制台实际看到：${esc(x.endpoint || "-")}${x.endpointMismatch ? "（不一致：自报地址可能是代理出口，实际以控制台看到的为准）" : ""}">${x.reported_endpoint ? esc(x.reported_endpoint) + (x.endpointMismatch ? " ⚠" : "") : `<span class="tag">经控制台</span>`}</div>
     <div class="cell dim" style="font-size:12px">${x.online ? fmtTime(x.last_seen) : x.last_seen ? fmtTime(x.last_seen) : "—"}</div>
     <div style="display:flex;gap:5px;justify-content:flex-end">
       <button class="btn sm primary" data-dev="${esc(x.id)}" data-op="deploy" title="一键部署：生成接入命令">部署</button>
@@ -1363,6 +1363,18 @@ async function openDeploy(dev) {
         <b>这台是「自助加入」的</b>
         <div class="dim" style="font-size:11.5px;margin-top:4px">私钥只在它本机，<b>下面这条 /dp/ 命令用不了</b>（服务端会返回 400）。接口已经通了的话，点「修复凭据」拿一条命令补同步即可；要重装就先用面板的「加入链接」。</div>
       </div>` : ""}
+      <details class="guide" style="margin:0 0 10px">
+        <summary>⚠ 装完还要在本机防火墙放行 UDP 51820（否则「你能连别人、别人连不回你」）</summary>
+        <ol>
+          <li><b>OpenWrt</b>：网络 → 防火墙 → 通信规则 → 添加<br>
+              名称 <code>Allow-awamesh</code> · 协议 <code>UDP</code> · 源区域 <code>wan</code> · 目标端口 <code>51820</code> · 动作 <b>接受入站</b></li>
+          <li><b>Ubuntu/Debian</b>：<code>ufw allow 51820/udp</code></li>
+          <li><b>CentOS/Rocky</b>：<code>firewall-cmd --permanent --add-port=51820/udp && firewall-cmd --reload</code></li>
+          <li><b>其它</b>：<code>iptables -I INPUT -p udp --dport 51820 -j ACCEPT</code></li>
+          <li><b>云主机</b>：还要在安全组/安全列表放行 <code>udp 51820</code></li>
+        </ol>
+        <p class="g-note">脚本只固定监听端口，不会替你改防火墙。端口固定成 51820 就是为了让你放行一次就够。</p>
+      </details>
       <div id="dpBody"><div class="empty">生成中…</div></div>
       <div class="modal-actions">
         <button class="btn" data-act="close">关闭</button>

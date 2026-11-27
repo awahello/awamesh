@@ -134,15 +134,6 @@ if [ -f /etc/config/network ] && command -v uci >/dev/null 2>&1; then
     uci set firewall.lan_awamesh=forwarding
     uci set firewall.lan_awamesh.src='lan'
     uci set firewall.lan_awamesh.dest='awamesh'
-    # WAN 入站放行：节点是被动接收方，控制台/别的节点要能主动连进来
-    uci -q delete firewall.awamesh_wan >/dev/null 2>&1 || true
-    uci set firewall.awamesh_wan=rule
-    uci set firewall.awamesh_wan.name='Allow-awamesh'
-    uci set firewall.awamesh_wan.src='wan'
-    uci set firewall.awamesh_wan.proto='udp'
-    uci set firewall.awamesh_wan.dest_port='51820'
-    uci set firewall.awamesh_wan.target='ACCEPT'
-    uci commit firewall
   fi
 
   /etc/init.d/network reload >/dev/null 2>&1 || /etc/init.d/network restart >/dev/null 2>&1 || true
@@ -209,6 +200,35 @@ if [ "${VIA:-auto}" != "wg" ]; then
       fi
     fi
   fi
+fi
+
+# 固定监听端口并在本机防火墙放行：节点是「被动接收方」，
+# 控制台/别的节点要能主动连进来，否则会出现「能 ping 通控制台、别人 ping 不通你」
+say "3.5/5 固定监听端口"
+WG_PORT=51820
+wg set "$IFACE" listen-port "$WG_PORT" 2>/dev/null || true
+CUR_PORT="$(wg show "$IFACE" listen-port 2>/dev/null || echo "$WG_PORT")"
+say "    监听端口：$CUR_PORT（已固定，方便你在防火墙上放行）"
+
+# 不动你的防火墙：只把该做的事写清楚，由你自己决定放不放
+say "    ⚠ 本机防火墙需要你手动放行 UDP $CUR_PORT（不放行的话：你能连别人，别人连不回你）"
+if [ -f /etc/config/firewall ] && command -v uci >/dev/null 2>&1; then
+  cat <<TIP
+       OpenWrt（LuCI）：网络 → 防火墙 → 通信规则 → 添加
+         名称 Allow-awamesh · 协议 UDP · 源区域 wan · 目标端口 $CUR_PORT · 动作 接受入站
+       命令行等价：
+         uci add firewall rule && uci set firewall.@rule[-1].name='Allow-awamesh' \\
+          && uci set firewall.@rule[-1].src='wan' && uci set firewall.@rule[-1].proto='udp' \\
+          && uci set firewall.@rule[-1].dest_port='$CUR_PORT' && uci set firewall.@rule[-1].target='ACCEPT' \\
+          && uci commit firewall && /etc/init.d/firewall reload
+TIP
+elif command -v ufw >/dev/null 2>&1; then
+  echo "       ufw allow $CUR_PORT/udp"
+elif command -v firewall-cmd >/dev/null 2>&1; then
+  echo "       firewall-cmd --permanent --add-port=$CUR_PORT/udp && firewall-cmd --reload"
+else
+  echo "       iptables -I INPUT -p udp --dport $CUR_PORT -j ACCEPT"
+  echo "       云主机还要在安全组/安全列表放行 udp $CUR_PORT"
 fi
 
 say "4/5 上报公网地址（决定能否和其他节点直连）"

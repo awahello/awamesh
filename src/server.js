@@ -156,6 +156,7 @@ CONF="/etc/wireguard/$IFACE.conf"
   echo "Address = $ADDR/$PREFIX"
   [ -n "\${DNSV:-}" ] && echo "DNS = $DNSV"
   echo "MTU = \${MTU:-1420}"
+  echo "ListenPort = 51820"
   echo
   echo "[Peer]"
   echo "PublicKey = $SERVERPUB"
