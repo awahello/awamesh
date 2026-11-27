@@ -574,8 +574,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET") return serveStatic(res, p);
     json(res, 405, { error: "方法不允许" });
   } catch (err) {
-    const code = err.status || 500;
-    log("[error]", err.message);
+    // 绝大多数 throw 都是「用户可修正的问题」（缺配置、参数不对），默认按 400 返回
+    const code = err.status || (err.name === "TypeError" || err.name === "ReferenceError" ? 500 : 400);
+    log("[error]", err.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : err.message);
     json(res, code, { error: err.message || "服务端错误" });
   }
 });

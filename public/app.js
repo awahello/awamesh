@@ -651,28 +651,6 @@ async function viewTunnels(main) {
       </div>
       <p class="dim" style="font-size:11px;margin:12px 0 0">v0.1 为只读同步；把 ingress 改指 mesh 地址与回滚在 v0.2 提供。</p>
     </div>`;
-  // 进页面自动探活一次：把「待检查」变成真实的后端连通性
-  (async () => {
-    try {
-      await api("/api/tunnels/probe", { method: "POST", body: "{}" });
-      const again = await api("/api/tunnels");
-      const rows = main.querySelectorAll(".rows .row:not(.head)");
-      (again.tunnels || []).forEach((t, i) => {
-        const cell = rows[i] && rows[i].children[2];
-        if (!cell) return;
-        cell.innerHTML = `<span class="dot ${t.health === "ok" ? "ok" : t.health === "down" ? "bad" : "warn"}"></span> ${t.health === "ok" ? "正常" : t.health === "down" ? "后端不通" : "待检查"}`;
-      });
-    } catch { /* 探活失败不打扰 */ }
-  })();
-
-  const gcBtn = main.querySelector('[data-act="gc"]');
-  if (gcBtn) gcBtn.onclick = async () => {
-    try {
-      const r = await api("/api/tunnels/gc", { method: "POST", body: "{}" });
-      toast(r.dropped && r.dropped.length ? `已清理：${r.dropped.join(", ")}` : "没有悬空规则");
-      renderView();
-    } catch (e) { toast(e.message, true); }
-  };
   main.querySelector('[data-act="refresh"]').onclick = renderView;
   main.querySelector('[data-act="add"]').onclick = openAddTunnel;
   const go = main.querySelector('[data-act="goSettings"]');
@@ -1018,9 +996,6 @@ async function viewPublishPage(main) {
     };
   });
   preview();
-  (async () => {
-    try { await api("/api/tunnels/probe", { method: "POST", body: "{}" }); render(); } catch { /* ignore */ }
-  })();
 }
 
 /* ---------------- 设置 ---------------- */
@@ -1735,7 +1710,6 @@ function openRoles(dev) {
       </div>
       <label class="dim" style="font-size:11px;margin-top:12px;display:block">发布的内网段（逗号分隔，网关角色用）</label>
       <input id="rRoutes" value="${esc((dev.routes || "").toString())}" placeholder="192.168.1.0/24, 10.0.10.0/24" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">
-      <div id="tOut"></div>
       <div class="modal-actions">
         <button class="btn" data-act="close">取消</button>
         <button class="btn primary" data-act="ok">保存</button>
