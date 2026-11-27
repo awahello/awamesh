@@ -1,6 +1,6 @@
 {
   "name": "awamesh",
-  "version": "0.12.2",
+  "version": "0.12.3",
   "private": true,
   "description": "自托管组网控制台：WireGuard 组网 + 多中继 + Cloudflare 隧道",
   "type": "module",

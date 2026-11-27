@@ -6,7 +6,7 @@ import { startConnector, stopConnector, connectorStatus } from "./connector.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cfg, log } from "./config.js";
-import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig, splitRoutes, deployTailscale, publicBase, relayAlive, exportBundle } from "./api.js";
+import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig, splitRoutes, deployTailscale, publicBase, relayAlive, exportBundle, probeTunnels } from "./api.js";
 import { seedIfEmpty, pruneEvents, addEvent, demoHeartbeat, clearDemo } from "./db.js";
 import {
   ensureAdminCredential, verifyCredential, sessionToken, validSession,
@@ -937,5 +937,7 @@ server.listen(cfg.port, cfg.host, () => {
   setTimeout(autoBackupOnce, 30_000).unref();
   setInterval(autoBackupOnce, 24 * 3600_000).unref();
   probeRelays().catch(() => {});
+  // 每 60 秒探活一次「面板发布」的服务：主备策略靠它自动切换
+  setInterval(() => { probeTunnels().catch(() => {}); }, 60_000).unref();
   setInterval(() => probeRelays().catch(() => {}), 60_000).unref();
 });

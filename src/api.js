@@ -1572,9 +1572,9 @@ ingress:
     const backend = String(body?.backend || "").trim().slice(0, 120);
     if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(hostname)) throw new Error("域名格式不对，例：nas.example.com");
     // 支持多目标：逗号或换行分隔，例如 http://10.88.0.3:8000, http://10.88.0.4:8000
-    const targets = String(backend)
+    const targets = [...new Set(String(backend)
       .split(/[,\n]/).map(x => x.trim()).filter(Boolean)
-      .map(x => (/^https?:\/\//.test(x) ? x : "http://" + x));
+      .map(x => (/^https?:\/\//.test(x) ? x : "http://" + x)))];
     if (!targets.length) throw new Error("后端要写成 http://10.88.0.5:8080");
     for (const t of targets) {
       if (!/^https?:\/\/[^\s]+$/.test(t)) throw new Error(`后端地址格式不对：${t}`);

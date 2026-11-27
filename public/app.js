@@ -999,6 +999,9 @@ async function viewPublishPage(main) {
     };
   });
   preview();
+  (async () => {
+    try { await api("/api/tunnels/probe", { method: "POST", body: "{}" }); render(); } catch { /* ignore */ }
+  })();
 }
 
 /* ---------------- 设置 ---------------- */
