@@ -939,6 +939,27 @@ ingress:
     db.prepare("UPDATE devices SET roles = ?, routes = ? WHERE id = ?")
       .run(roles.join(","), routes.join(","), seg[1]);
 
+    // 角色里勾了「中继」= 这台同时充当 DERP 节点，自动在中继页建一条对应记录，
+    // 这样不用再单独"添加中继"，两边也不会对不上。
+    const rid = "relay_" + dev.id;
+    if (roles.includes("relay")) {
+      const ep = String(dev.endpoint || "").replace(/^\[/, "").replace(/\]:\d+$/, "").replace(/:\d+$/, "");
+      const addr = ep || String(dev.mesh_ip || "").replace(/\.\d+$/, ".1");
+      const port = 18444;
+      const exists = db.prepare("SELECT id FROM relays WHERE id = ?").get(rid);
+      if (exists) {
+        db.prepare("UPDATE relays SET name = ?, addr = ?, port = ?, device_id = ?, enabled = 1 WHERE id = ?")
+          .run(dev.name + " · 中继", addr, port, dev.id, rid);
+      } else {
+        db.prepare(`INSERT INTO relays(id,name,region,region_code,addr,port,visibility,quota_gb,used_gb,state,enabled,last_health,demo,kind,device_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(rid, dev.name + " · 中继", "由设备兼任", "", addr, port, "public", 0, 0, "unknown", 1, null, 0, "derp", dev.id);
+      }
+      addEvent("relay", `${dev.name} 兼任中继（DERP ${addr}:${port}）`, dev.id);
+    } else {
+      try { db.prepare("DELETE FROM relays WHERE id = ?").run(rid); } catch { /* ignore */ }
+    }
+
     // 网段变化要同步到服务端对端的 allowed-ips，否则控制台到不了那个网段
     const peer = db.prepare("SELECT * FROM wg_peers WHERE device_id = ?").get(seg[1]);
     if (peer && isManaged()) {

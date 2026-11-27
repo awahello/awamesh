@@ -369,6 +369,7 @@ async function viewRelays(main) {
             </b>
             ${r.kind === "builtin" ? `<span class="tag info">内置</span>` : r.visibility === "private" ? `<span class="tag info">仅内网</span>` : `<span class="tag">公网</span>`}
           </div>
+          ${r.device_id ? `<span class="tag info">设备兼任</span>` : ""}
           <div class="mono muted" style="font-size:12px;margin-bottom:8px">${r.kind === "builtin" ? "控制台自身的 WireGuard 转发（无需部署）" : esc(r.addr) + ":" + r.port}</div>
           ${r.kind === "builtin" ? "" : `<div class="dim" style="font-size:11px;margin-bottom:8px">删除或「从地图摘除」后，那台机器 60 秒内自动卸载 derper</div>`}
           <div style="display:flex;justify-content:space-between;font-size:12px" class="muted">
