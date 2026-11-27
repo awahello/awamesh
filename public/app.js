@@ -334,8 +334,8 @@ function rowDevice(x) {
     <div class="cell" style="font-size:12px">${path}</div>
     <div class="cell mono dim" style="font-size:11px" title="${esc(x.reported_endpoint || x.endpoint || "无公网地址")}${x.endpointMismatch ? " · 与控制台看到的源地址不一致（可能有代理/多层 NAT）" : ""}">${x.reported_endpoint ? esc(x.reported_endpoint) + (x.endpointMismatch ? " ⚠" : "") : `<span class="tag">经控制台</span>`}</div>
     <div class="cell dim" style="font-size:12px">${x.online ? fmtTime(x.last_seen) : x.last_seen ? fmtTime(x.last_seen) : "—"}</div>
-    <div style="display:flex;gap:6px;justify-content:flex-end">
-      <button class="btn sm primary" data-dev="${esc(x.id)}" data-op="deploy">一键部署</button>
+    <div style="display:flex;gap:5px;justify-content:flex-end">
+      <button class="btn sm primary" data-dev="${esc(x.id)}" data-op="deploy" title="一键部署：生成接入命令">部署</button>
       <button class="btn sm" data-dev="${esc(x.id)}" data-op="roles">角色</button>
       <button class="btn sm" data-dev="${esc(x.id)}" data-op="publish">发布</button>
       <button class="btn sm" data-dev="${esc(x.id)}" data-op="conf">配置</button>
@@ -372,6 +372,7 @@ async function viewRelays(main) {
           ${r.device_id ? `<span class="tag info">设备兼任</span>` : ""}
           <div class="mono muted" style="font-size:12px;margin-bottom:8px">${r.kind === "builtin" ? "控制台自身的 WireGuard 转发（无需部署）" : esc(r.addr) + ":" + r.port}</div>
           ${r.kind === "builtin" ? "" : `<div class="dim" style="font-size:11px;margin-bottom:8px">删除或「从地图摘除」后，那台机器 60 秒内自动卸载 derper</div>`}
+          ${r.device_id && r.state !== "online" ? `<div class="dim" style="font-size:11px;margin-bottom:8px;color:var(--warn)">这条来自设备角色，还差一步：在那台设备上执行「接入命令」安装 derper</div>` : ""}
           <div style="display:flex;justify-content:space-between;font-size:12px" class="muted">
             <span>本月 ${fmtGb(r.used_gb)}${r.quota_gb ? " / " + fmtGb(r.quota_gb) : ""}</span>
             <span>${r.state === "online" ? "在线" : r.state === "offline" ? "不可达" : "未验证"}</span>
@@ -439,6 +440,19 @@ async function viewTunnels(main) {
         <button class="btn primary" data-act="add">添加隧道</button>
       </div>
     </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-h"><b>隧道连接器</b><span id="cfcState">读取中…</span></div>
+      <p class="dim" style="font-size:11px;margin:0 0 8px">
+        cloudflared 直接跑在 awamesh 容器里，天然能看到 10.88.0.0/24，不用另起容器、不用 --network 参数。
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="cfcToken" placeholder="粘这里：隧道 token（发布弹层给的那串 eyJ…）" style="flex:1;min-width:260px;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text)">
+        <button class="btn primary" id="cfcStart">启动</button>
+        <button class="btn" id="cfcStop">停止</button>
+      </div>
+      <div id="cfcLog" class="code" style="margin-top:8px;max-height:150px;overflow:auto"></div>
+    </div>
     ${d.cfEnabled ? "" : `<div class="card" style="margin-bottom:12px;border-color:var(--info)">
       <b>还没连接 Cloudflare</b>
       <span class="muted"> · 去「设置 → Cloudflare」填 Token（和 Account ID），点「保存」再「测试连接」，然后回这一页点右上「刷新」。</span>
@@ -470,6 +484,28 @@ async function viewTunnels(main) {
       renderView();
     };
   });
+
+  const cfcRefresh = async () => {
+    const st = await api("/api/tunnel/connector").catch(() => null);
+    const el = main.querySelector("#cfcState");
+    if (!st || !el) return;
+    el.innerHTML = st.running
+      ? (st.connected ? '<span style="color:var(--ok)">已连接</span>' : '<span style="color:var(--warn)">已启动，等待连接</span>')
+      : '<span class="dim">未运行</span>';
+    main.querySelector("#cfcLog").textContent = (st.lines || []).join("\n") || "（暂无日志）";
+  };
+  cfcRefresh();
+  main.querySelector("#cfcStart").onclick = async () => {
+    try {
+      await api("/api/tunnel/connector", { method: "POST", body: JSON.stringify({ action: "start", token: main.querySelector("#cfcToken").value.trim() }) });
+      toast("连接器启动中…");
+      setTimeout(cfcRefresh, 2500);
+    } catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#cfcStop").onclick = async () => {
+    try { await api("/api/tunnel/connector", { method: "POST", body: JSON.stringify({ action: "stop" }) }); toast("已停止"); cfcRefresh(); }
+    catch (e) { toast(e.message, true); }
+  };
   const syncBtn = main.querySelector('[data-act="sync"]');
   if (syncBtn) syncBtn.onclick = async () => {
     syncBtn.disabled = true;

@@ -62,7 +62,7 @@ fi
 
 # 2) 备份 data/
 if [ "$NO_BACKUP" = "0" ] && [ -d ./data ]; then
-  B="backup-$(date +%F-%H%M).tgz"
+  B="backup-$(date +%F-%H%M%S).tgz"
   tar czf "$B" data 2>/dev/null && ok "已备份 data/ → $B" || warn "备份失败（继续）"
 fi
 

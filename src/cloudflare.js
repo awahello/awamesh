@@ -149,11 +149,12 @@ export async function listTunnels(accountId) {
  */
 export function toRows(items, db) {
   const upsert = db.prepare(`
-    INSERT INTO tunnels(id, name, hostname, backend, health, latency_ms, last_check, migratable)
-    VALUES(?,?,?,?,?,?,?,?)
+    INSERT INTO tunnels(id, name, hostname, backend, health, latency_ms, last_check, migratable, source)
+    VALUES(?,?,?,?,?,?,?,?,'cloudflare')
     ON CONFLICT(id) DO UPDATE SET
       name=excluded.name, hostname=excluded.hostname, backend=excluded.backend,
-      health=excluded.health, last_check=excluded.last_check`);
+      health=excluded.health, last_check=excluded.last_check
+      , source=COALESCE(tunnels.source,'cloudflare')`);
   const now = Math.floor(Date.now() / 1000);
   for (const t of items) {
     upsert.run(

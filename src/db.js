@@ -88,6 +88,8 @@ try { db.exec("ALTER TABLE devices ADD COLUMN wg_port INTEGER"); } catch {}
 try { db.exec("ALTER TABLE devices ADD COLUMN node_token TEXT"); } catch {}
 // 网关角色：这台机器发布进 mesh 的内网段（逗号分隔的 CIDR）
 try { db.exec("ALTER TABLE devices ADD COLUMN routes TEXT"); } catch {}
+// 隧道来源：awamesh = 面板发布时建的，cloudflare = 从 CF 同步来的
+try { db.exec("ALTER TABLE tunnels ADD COLUMN source TEXT"); } catch {}
 // 中继记录可以由某台设备兼任（角色里勾了「中继」时自动建）
 try { db.exec("ALTER TABLE relays ADD COLUMN device_id TEXT"); } catch {}
 // 每台设备是否参与 P2P 直连（0 = 只走控制台转发，用于打洞总是失败的网络）

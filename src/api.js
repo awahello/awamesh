@@ -1279,6 +1279,7 @@ ingress:
       VALUES(?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET backend=excluded.backend, name=excluded.name, last_check=excluded.last_check`)
       .run("cf_" + tun.id + "_" + hostname, tun.name, hostname, backend.replace(/^https?:\/\//, ""), "unknown", null, now(), 0);
+    db.prepare("UPDATE tunnels SET source = 'awamesh' WHERE id = ?").run("cf_" + tun.id + "_" + hostname);
 
     addEvent("tunnel", `发布 ${hostname} → ${backend}（隧道 ${tun.name}）`);
     // 关键：连接器必须和控制台共享同一个网络命名空间，才看得到 10.88.0.0/24

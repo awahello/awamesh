@@ -1,5 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
+import { spawn } from "node:child_process";
+import { secretSetting, saveSecretSetting } from "./secrets.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cfg, log } from "./config.js";
@@ -441,6 +443,21 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, r);
     }
 
+    if (p === "/api/tunnel/connector" && req.method === "GET") {
+      return json(res, 200, cfStatus());
+    }
+
+    if (p === "/api/tunnel/connector" && req.method === "POST") {
+      const act = String(body?.action || "");
+      if (act === "stop") return json(res, 200, cfStop());
+      const token = String(body?.token || "").trim() || secretSetting("cf_tunnel_token", "");
+      if (!token) return json(res, 400, { error: "没有 token：先「发布到 Cloudflare」，把弹层里的 token 粘进来" });
+      if (body?.token) saveSecretSetting("cf_tunnel_token", token);
+      cfStop();
+      const r = cfStart(token);
+      return json(res, 200, { ...r, ...cfStatus() });
+    }
+
     if (p === "/api/join/peers.sh" && req.method === "GET") {
       const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
       // 校验凭据有效（无效就 401，节点侧会按 401 处理）
@@ -703,6 +720,53 @@ async function syncWgStatus() {
 globalThis.__awaWgRetry = () => wgBoot();
 globalThis.__awaProbeRelays = () => probeRelays();
 
+
+
+/* ---------- Cloudflare 隧道连接器（cloudflared 跑在容器内，天然共享网络命名空间） ---------- */
+const cfRunner = { proc: null, lines: [], since: 0 };
+
+function cfLog(line) {
+  cfRunner.lines.push(line);
+  if (cfRunner.lines.length > 120) cfRunner.lines.shift();
+}
+
+function cfStart(token) {
+  if (cfRunner.proc) return { running: true };
+  if (!token) return { running: false, error: "没有 token" };
+  const p = spawn("cloudflared", ["tunnel", "--no-autoupdate", "run", "--token", token], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  cfRunner.proc = p;
+  cfRunner.since = Date.now();
+  cfLog("[start] cloudflared 已启动");
+  const onData = (d) => String(d).split("\n").map(x => x.trim()).filter(Boolean).forEach(cfLog);
+  p.stdout.on("data", onData);
+  p.stderr.on("data", onData);
+  p.on("exit", (code, sig) => {
+    cfLog(`[exit] code=${code} sig=${sig || "-"}`);
+    cfRunner.proc = null;
+  });
+  p.on("error", (e) => { cfLog("[error] " + e.message); cfRunner.proc = null; });
+  return { running: true };
+}
+
+function cfStop() {
+  if (!cfRunner.proc) return { running: false };
+  try { cfRunner.proc.kill("SIGTERM"); } catch { /* ignore */ }
+  cfRunner.proc = null;
+  cfLog("[stop] 已停止");
+  return { running: false };
+}
+
+function cfStatus() {
+  const tail = cfRunner.lines.slice(-25);
+  return {
+    running: !!cfRunner.proc,
+    since: cfRunner.since || null,
+    connected: tail.some(l => /Registered tunnel connection/i.test(l)),
+    lines: tail,
+  };
+}
 
 /** 每日把整份配置写到 data/auto-backup/，方便 rsync 到备机（保留 7 份） */
 function autoBackupOnce() {

@@ -158,7 +158,13 @@ a { color: var(--info); text-decoration: none; }
 .muted { color: var(--text-2); }
 .dim { color: var(--text-3); }
 
-.devices .row { grid-template-columns: 1.5fr 0.95fr 1.15fr 1fr 1.15fr 0.7fr 0.95fr; }
+.devices .row {
+  grid-template-columns:
+    minmax(0, 1.35fr) minmax(0, 0.95fr) minmax(0, 1fr) minmax(0, 0.9fr)
+    minmax(0, 1.45fr) minmax(0, 0.85fr) 300px;
+}
+.devices .row > div { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.devices .row > div:last-child { overflow: visible; }
 .events .row { grid-template-columns: 0.8fr 3fr 1fr; }
 
 /* ---------- 登录 ---------- */
