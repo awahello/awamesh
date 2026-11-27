@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
 
-const runner = { proc: null, lines: [], since: 0, bin: "" };
+const runner = { proc: null, lines: [], since: 0, bin: "", token: "", manualStop: false, restarts: 0 };
 
 function push(line) {
   runner.lines.push(line);
@@ -30,8 +30,11 @@ export async function resolveCloudflared() {
 }
 
 export async function startConnector(token) {
+  if (token) runner.token = token;
+  runner.manualStop = false;
   if (runner.proc) return { running: true, reused: true };
-  if (!token) return { running: false, error: "没有 token" };
+  if (!runner.token) return { running: false, error: "没有 token" };
+  token = runner.token;
   const { bin, version } = await resolveCloudflared();
   runner.bin = bin;
   push(`[bin] ${bin} · ${version}`);
@@ -44,12 +47,24 @@ export async function startConnector(token) {
   const onData = (d) => String(d).split("\n").map(x => x.trim()).filter(Boolean).forEach(push);
   p.stdout.on("data", onData);
   p.stderr.on("data", onData);
-  p.on("exit", (code, sig) => { push(`[exit] code=${code} sig=${sig || "-"}`); runner.proc = null; });
+  p.on("exit", (code, sig) => {
+    push(`[exit] code=${code} sig=${sig || "-"}`);
+    runner.proc = null;
+    // 非手动停止就自动拉起来（升级、容器重启、CF 侧断连都能自愈）
+    if (!runner.manualStop && runner.token && runner.restarts < 50) {
+      runner.restarts += 1;
+      const delay = Math.min(30000, 3000 * runner.restarts);
+      push(`[supervisor] ${Math.round(delay / 1000)} 秒后重启（第 ${runner.restarts} 次）`);
+      setTimeout(() => { if (!runner.manualStop && !runner.proc) startConnector().catch((e) => push("[supervisor] 重启失败：" + e.message)); }, delay).unref?.();
+    }
+  });
   p.on("error", (e) => { push("[error] " + e.message); runner.proc = null; });
   return { running: true, bin, version };
 }
 
 export function stopConnector() {
+  runner.manualStop = true;
+  runner.restarts = 0;
   if (!runner.proc) return { running: false };
   try { runner.proc.kill("SIGTERM"); } catch { /* ignore */ }
   runner.proc = null;
@@ -64,6 +79,7 @@ export function connectorStatus() {
     since: runner.since || null,
     bin: runner.bin || "",
     connected: tail.some(l => /Registered tunnel connection/i.test(l)),
+    restarts: runner.restarts,
     lines: tail,
   };
 }

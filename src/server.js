@@ -225,7 +225,10 @@ elif command -v wg-quick >/dev/null 2>&1; then
 else
   ip link del "$IFACE" 2>/dev/null || true
   ip link add dev "$IFACE" type wireguard
-  wg setconf "$IFACE" <(grep -v '^#' "$CONF" | sed -n '/\[Peer\]/,$p' | grep -v '^\[' || true) 2>/dev/null || true
+  # dash 不支持 <()，先落地成临时文件（Ubuntu 的 /bin/sh 是 dash）
+  awk '/^\\[Peer\\]/{f=1} f' "$CONF" > /tmp/awa.peer.$$ 2>/dev/null || true
+  [ -s /tmp/awa.peer.$$ ] && wg setconf "$IFACE" /tmp/awa.peer.$$ 2>/dev/null || true
+  rm -f /tmp/awa.peer.$$
   ip addr add "$ADDR/$PREFIX" dev "$IFACE" 2>/dev/null || true
   ip link set mtu \${MTU:-1420} up dev "$IFACE"
   wg set "$IFACE" private-key /etc/wireguard/$IFACE.key peer "$SERVERPUB" endpoint "$ENDPOINT" allowed-ips "$ALLOWED" persistent-keepalive 25
