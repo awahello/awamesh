@@ -359,6 +359,30 @@ export function connectionHistory(deviceId, days = 3) {
 }
 
 
+
+/** 从部署端扫某台设备（或任意内网 IP）上开着的常见端口，方便挑源站 */
+export async function scanPorts(host, extraPorts = []) {
+  const net = await import("node:net");
+  const common = [80, 443, 3000, 5000, 8000, 8080, 8081, 8443, 8888, 9000, 9090, 41399, 5244, 8096, 8123];
+  const ports = [...new Set([...common, ...extraPorts.map(Number).filter(Boolean)])];
+  const check = (port) => new Promise((resolve) => {
+    const sock = new net.Socket();
+    let done = false;
+    const fin = (ok) => {
+      if (done) return; done = true;
+      try { sock.destroy(); } catch { /* ignore */ }
+      resolve(ok ? port : 0);
+    };
+    sock.setTimeout(900);
+    sock.once("connect", () => fin(true));
+    sock.once("timeout", () => fin(false));
+    sock.once("error", () => fin(false));
+    sock.connect(port, host);
+  });
+  const results = await Promise.all(ports.map(check));
+  return { host, open: results.filter(Boolean).sort((a, b) => a - b), scanned: ports.length };
+}
+
 /** 控制台实际下发给某台设备的「对端表」——用来在面板上看完整路由 */
 export function routeTableFor(deviceId, hostHeader) {
   const self = db.prepare("SELECT * FROM devices WHERE id = ?").get(deviceId);
@@ -1187,6 +1211,13 @@ export async function api(req, res, url, body) {
 
 
   // ---- 聚合入口：部署端做反代，把多个源站合成一个域名 ----
+  if (url.pathname === "/api/scan" && method === "POST") {
+    const dev = body?.deviceId ? db.prepare("SELECT * FROM devices WHERE id = ?").get(body.deviceId) : null;
+    const host = String(body?.host || dev?.mesh_ip || "").trim();
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) throw new Error("要一个 IP（设备 mesh 地址或内网地址）");
+    return scanPorts(host, String(body?.ports || "").split(/[,\s]+/).filter(Boolean));
+  }
+
   if (url.pathname === "/api/sites" && method === "GET") {
     return { ...proxyStatus(), sites: listSites() };
   }

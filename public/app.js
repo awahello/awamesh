@@ -1060,14 +1060,24 @@ async function viewPublishPage(main) {
       </div>
     </div>`;
 
-  let order = list.map((_, i) => String(i)).filter(x => x === "0");   // 选中顺序即优先级
+  let order = [];   // 勾选顺序即优先级，初始化时按实际勾选同步
+  main.querySelectorAll(".pvPick").forEach(cb => { if (cb.checked) order.push(cb.dataset.i); });
   const rank = () => {
     main.querySelectorAll(".pvPick").forEach(cb => {
       const i = cb.dataset.i;
       const badge = main.querySelector(`.pvRank[data-i="${i}"]`);
       if (!badge) return;
       const pos = order.indexOf(i);
-      if (pos < 0) { badge.style.display = "none"; return; }
+      if (pos < 0) {
+        badge.style.display = "none";
+        const up = main.querySelector(`[data-pvup="${i}"]`), down = main.querySelector(`[data-pvdown="${i}"]`);
+        if (up) up.disabled = true;
+        if (down) down.disabled = true;
+        return;
+      }
+      const up = main.querySelector(`[data-pvup="${i}"]`), down = main.querySelector(`[data-pvdown="${i}"]`);
+      if (up) up.disabled = pos === 0;
+      if (down) down.disabled = pos === order.length - 1;
       badge.style.display = "";
       badge.textContent = pos === 0 ? "主" : "备" + pos;
       badge.className = "tag pvRank" + (pos === 0 ? " ok" : "");
@@ -1156,7 +1166,11 @@ async function viewPublishPage(main) {
 
 /* ---------------- 聚合入口：部署端反代多个源站 ---------------- */
 async function viewSites(main) {
-  const d = await api("/api/sites").catch(() => ({ sites: [], port: 0, running: false }));
+  const [d, dv] = await Promise.all([
+    api("/api/sites").catch(() => ({ sites: [], port: 0, running: false })),
+    api("/api/devices").catch(() => ({ devices: [] })),
+  ]);
+  d.devices = dv.devices || [];
   main.innerHTML = `
     <div class="topbar">
       <div><h1>聚合入口</h1><div class="sub">一个域名 → 多个源站（可跨设备、可经网关），按负载或主备转发</div></div>
@@ -1174,6 +1188,16 @@ async function viewSites(main) {
             <option value="standby">主备（第一个为主）</option>
           </select></div>
       </div>
+      <label class="dim" style="font-size:11px;display:block;margin-top:10px">从设备里挑（先扫这台开了哪些端口）</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 10px">
+        <select id="scDev" style="padding:6px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);min-width:200px">
+          ${(d.devices || []).filter(x => !x.revoked_at).map(x => `<option value="${esc(x.id)}" data-ip="${esc(x.mesh_ip || "")}">${esc(x.name)} · ${esc(x.mesh_ip || "")}</option>`).join("") || '<option value="">（还没有设备）</option>'}
+        </select>
+        <input id="scIp" placeholder="或直接填内网 IP（如 10.0.0.109）" style="flex:1;min-width:180px;padding:6px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-family:var(--mono);font-size:12px">
+        <button class="btn" id="scGo">扫描端口</button>
+      </div>
+      <div id="scOut" class="dim" style="font-size:11px;margin-bottom:10px"></div>
+
       <label class="dim" style="font-size:11px">源站（第一行是<b>主</b>，下面依次是备1/备2；可跨设备）</label>
       <div id="stRows" style="display:grid;gap:6px;margin:6px 0"></div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
@@ -1236,6 +1260,24 @@ async function viewSites(main) {
   };
   stRender();
   main.querySelector("#stAddRow").onclick = () => { stRows.push(""); stRender(); };
+
+  const scBtn = main.querySelector("#scGo");
+  if (scBtn) scBtn.onclick = async () => {
+    const out = main.querySelector("#scOut");
+    const ip = main.querySelector("#scIp").value.trim();
+    const devId = main.querySelector("#scDev").value;
+    const host = ip || (main.querySelector("#scDev").selectedOptions[0]?.dataset.ip || "");
+    if (!host) return toast("选一台设备或填 IP", true);
+    out.textContent = `扫描 ${host} …`;
+    try {
+      const r = await api("/api/scan", { method: "POST", body: JSON.stringify({ deviceId: ip ? "" : devId, host }) });
+      if (!r.open.length) { out.textContent = `${host} 上没扫到常见端口（可手动填端口后点扫描重试）`; return; }
+      out.innerHTML = `${host} 开着：` + r.open.map(p => `<button class="btn sm" data-port="${p}" style="margin:2px 4px 2px 0">${p}</button>`).join("");
+      out.querySelectorAll("[data-port]").forEach(b => {
+        b.onclick = () => { stRows = stRows.filter(x => x.trim()); stRows.push(`${host}:${b.dataset.port}`); if (!stRows.length) stRows = [""]; stRender(); toast(`已加入 ${host}:${b.dataset.port}`); };
+      });
+    } catch (e) { out.textContent = e.message; }
+  };
 
   main.querySelector('[data-act="probe"]').onclick = async () => {
     try { const r = await api("/api/sites/probe", { method: "POST", body: "{}" }); toast(`已探活 ${r.checked} 个源站`); render(); }
@@ -2188,11 +2230,27 @@ async function openDeploy(dev) {
       try {
         const t = await api(`/api/devices/${encodeURIComponent(dev.id)}/ts-command`, { method: "POST", body: "{}" });
         mask.querySelector("#winBox").innerHTML = `
-          <div class="dim" style="font-size:11px;margin-top:10px">通用（Linux / Debian / 群晖）：没装会自动装，再 up；带 45 秒超时，卡住会打印诊断</div>
-          <div class="code block" style="max-height:180px">${esc(t.command)}</div>
-          <div class="dim" style="font-size:11px;margin-top:10px">OpenWrt 专用（netfilter-mode=off，避免和 fw4/mwan3 打架）</div>
-          <div class="code block" style="max-height:180px">${esc(t.openwrt)}</div>
-          <div class="dim" style="font-size:11px">主机名会写成 <b>${esc(t.hostname)}</b>（Tailscale 只接受小写字母/数字/连字符）· ${t.installed ? "当前已上报：" + esc(t.tsIp) : "当前还没有上报 Tailscale 地址"}</div>`;
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+            <span class="dim" style="font-size:11px">通用（Linux / Debian / 群晖）：没装会自动装，再 up；45 秒超时，卡住会打印诊断</span>
+            <span style="flex:1"></span>
+            <button class="btn sm" data-copy="ts1">复制</button>
+          </div>
+          <div class="code block" id="tsCmd1" style="max-height:180px">${esc(t.command)}</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+            <span class="dim" style="font-size:11px">OpenWrt 专用（netfilter-mode=off，避免和 fw4/mwan3 打架）</span>
+            <span style="flex:1"></span>
+            <button class="btn sm" data-copy="ts2">复制</button>
+          </div>
+          <div class="code block" id="tsCmd2" style="max-height:180px">${esc(t.openwrt)}</div>
+          <div class="dim" style="font-size:11px">主机名 <b>${esc(t.hostname)}</b>（Tailscale 只接受小写字母/数字/连字符）· ${t.installed ? "当前已上报：" + esc(t.tsIp) : "当前还没有上报 Tailscale 地址"}</div>`;
+        const copy = async (id) => {
+          const text = mask.querySelector("#" + id).textContent;
+          try { await navigator.clipboard.writeText(text); toast("已复制"); }
+          catch { toast("复制失败，请手动选择", true); }
+        };
+        mask.querySelectorAll("[data-copy]").forEach(b => {
+          b.onclick = () => copy(b.dataset.copy === "ts1" ? "tsCmd1" : "tsCmd2");
+        });
       } catch (e) { toast(e.message, true); }
     };
     mask.querySelector('[data-act="win"]').onclick = () => {
