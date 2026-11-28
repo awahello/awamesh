@@ -187,7 +187,16 @@ async function viewOverview(main, silent) {
     <div class="grid c2">
       <div class="card">
         <div class="card-h"><b>网络</b><span>${esc(d.meshCidr)}</span></div>
-        <div class="rows">
+        ${(d.devices || []).filter(x => !x.revoked_at).length > 1 && (d.devices || []).every(x => x.revoked_at || x.path !== "direct") && S.p2p === false ? `
+      <div class="card" style="margin-bottom:12px;border-color:var(--info)">
+        <b>现在所有设备都经控制台转发</b>
+        <div class="dim" style="font-size:11.5px;margin-top:4px">
+          跨设备延迟会变成「各自到控制台之和」。如果两台本来就在同一机房/同城，开启 P2P 直连可以把延迟降到几毫秒；
+          万一某台打不通，控制台会在 3 分钟内自动把它回落到中继。
+        </div>
+        <div style="margin-top:8px"><button class="btn primary" data-act="p2pon">开启 P2P 直连</button></div>
+      </div>` : ""}
+    <div class="rows">
           ${d.groups.slice(0, 6).map(g => `
             <div class="row" style="grid-template-columns:10px 1fr auto">
               <span class="dot ${g.online === g.total ? "ok" : "warn"}"></span>

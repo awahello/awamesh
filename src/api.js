@@ -305,7 +305,7 @@ export async function sampleConnections() {
   let dump = [];
   try { dump = await wg.dump(); } catch { return 0; }
 
-  const rows = db.prepare(`SELECT d.id, d.name, d.endpoint, d.reported_endpoint, d.via_ts, p.public_key
+  const rows = db.prepare(`SELECT d.id, d.name, d.endpoint, d.reported_endpoint, d.via_ts, d.p2p, d.p2p_miss, p.public_key
     FROM devices d JOIN wg_peers p ON p.device_id = d.id WHERE d.revoked_at IS NULL`).all();
   const t = now();
   let n = 0;
@@ -316,6 +316,21 @@ export async function sampleConnections() {
     db.prepare("INSERT INTO conn_samples(device_id, at, endpoint, handshake, rx, tx, path) VALUES(?,?,?,?,?,?,?)")
       .run(r.id, t, p.endpoint || "", p.handshake || 0, p.rxBytes || 0, p.txBytes || 0, path);
     n++;
+
+    // P2P 自愈：开了直连却连续 3 分钟握不上手 → 自动回落中继，避免黑洞
+    if (r.p2p !== 0 && !r.via_ts) {
+      const age = t - (p.handshake || 0);
+      if (!p.handshake || age > 600) {
+        const miss = (r._miss || 0) + 1;
+        db.prepare("UPDATE devices SET p2p_miss = ? WHERE id = ?").run(miss, r.id);
+        if (miss >= 3) {
+          db.prepare("UPDATE devices SET p2p = 0, p2p_miss = 0 WHERE id = ?").run(r.id);
+          addEvent("device", `${r.name} 直连 3 分钟没握手，已自动回落中继`, r.id);
+        }
+      } else if (r.p2p_miss) {
+        db.prepare("UPDATE devices SET p2p_miss = 0 WHERE id = ?").run(r.id);
+      }
+    }
   }
   return n;
 }
