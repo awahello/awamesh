@@ -220,16 +220,16 @@ async function viewOverview(main, silent) {
         <div class="dim" style="font-size:11px;margin-bottom:8px">中继流量</div>
         ${(d.relaysList || []).slice(0, 3).map(r => `
           <div style="margin-bottom:9px">
-            <div style="display:flex;justify-content:space-between;font-size:12px"><span>${esc(r.region)}</span><span class="muted">${fmtGb(r.used_gb)}${r.quota_gb ? " / " + fmtGb(r.quota_gb) : ""}</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px"><span>${esc(r.device_id ? r.name.replace(/\s*·\s*中继$/, "") : (r.region || r.name))}</span><span class="muted">${!r.used_gb && !r.quota_gb ? "—" : fmtGb(r.used_gb) + (r.quota_gb ? " / " + fmtGb(r.quota_gb) : "")}</span></div>
             <div class="bar" style="margin-top:4px"><i style="width:${r.quota_gb ? Math.min(100, Math.round(r.used_gb / r.quota_gb * 100)) : 5}%"></i></div>
           </div>`).join("") || `<div class="empty">尚未加载</div>`}
         <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
           <div class="dim" style="font-size:11px;margin-bottom:6px">隧道</div>
           ${(d.tunnelsList || []).slice(0, 4).map(t => `
             <div style="display:flex;align-items:center;gap:7px;font-size:12px;margin-bottom:6px">
-              <span class="dot ${t.health === "ok" ? "ok" : "warn"}"></span>
-              <span class="cell" style="flex:1">${esc(t.hostname)}</span>
-              <span class="muted mono">${esc(t.backend)}</span>
+              <span class="dot ${t.source !== "awamesh" ? "off" : t.health === "ok" ? "ok" : "bad"}"></span>
+              <span class="cell" style="flex:1">${esc(t.hostname)}${t.source !== "awamesh" ? ' <span class="tag">外部</span>' : ""}</span>
+              <span class="muted mono" style="font-size:11px">${esc(t.backend)}</span>
             </div>`).join("") || `<div class="empty">尚未加载</div>`}
         </div>
       </div>
@@ -428,7 +428,7 @@ async function openHistory(dev) {
             <div class="cell mono" style="font-size:11px">${esc(x.meshIp || "")}</div>
             <div class="cell mono dim" style="font-size:10.5px;white-space:normal">${esc(x.allowed || "")}</div>
             <div class="cell mono dim" style="font-size:11px">${esc(x.endpoint || "-")}</div>
-            <div class="cell"><span class="tag ${x.via === "直连" ? "ok" : "warn"}">${esc(x.via)}</span></div>
+            <div class="cell"><span class="tag ${x.via === "直连" ? "ok" : "warn"}" title="${esc(x.viaNote || "")}">${esc(x.via)}</span></div>
           </div>`).join("") || `<div class="empty">没有其它对端</div>`}
         </div>`;
     }

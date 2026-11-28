@@ -368,7 +368,10 @@ export function routeTableFor(deviceId, hostHeader) {
       meshIp: r.mesh_ip,
       allowed: allowedFor(r),
       endpoint: ep,
-      via: direct ? (r.endpoint === r.reported_endpoint ? "直连" : "直连（实际地址）") : "经控制台",
+      via: direct ? "直连" : "经控制台",
+      viaNote: direct
+        ? (r.endpoint === r.reported_endpoint ? "用对方自报地址" : "用控制台实测到的真实地址（对方自报可能是代理）")
+        : "双方经控制台转发",
       publicKey: (r.public_key || "").slice(0, 12) + "…",
     };
   });
