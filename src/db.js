@@ -98,6 +98,10 @@ try { db.exec("ALTER TABLE relays ADD COLUMN device_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE devices ADD COLUMN p2p_miss INTEGER DEFAULT 0"); } catch {}
 // 上次重试直连的时间（自动回落 30 分钟后重试）
 try { db.exec("ALTER TABLE devices ADD COLUMN p2p_retry_at INTEGER DEFAULT 0"); } catch {}
+// 节点自报的内网网段（用于面板提示/扫描内网服务）
+try { db.exec("ALTER TABLE devices ADD COLUMN lan_cidr TEXT"); } catch {}
+// 面板自动加的网关网段（删除源站时据此回收，不影响用户手填的）
+try { db.exec("ALTER TABLE devices ADD COLUMN auto_routes TEXT"); } catch {}
 // 经 Tailscale 回连（设备没有公网/不能开端口时用）
 try { db.exec("ALTER TABLE devices ADD COLUMN via_ts INTEGER DEFAULT 0"); } catch {}
 // 每台设备是否参与 P2P 直连（0 = 只走控制台转发，用于打洞总是失败的网络）

@@ -1191,12 +1191,14 @@ async function viewSites(main) {
       <label class="dim" style="font-size:11px;display:block;margin-top:10px">从设备里挑（先扫这台开了哪些端口）</label>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 10px">
         <select id="scDev" style="padding:6px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);min-width:200px">
-          ${(d.devices || []).filter(x => !x.revoked_at).map(x => `<option value="${esc(x.id)}" data-ip="${esc(x.mesh_ip || "")}">${esc(x.name)} · ${esc(x.mesh_ip || "")}</option>`).join("") || '<option value="">（还没有设备）</option>'}
+          ${(d.devices || []).filter(x => !x.revoked_at).map(x => `<option value="${esc(x.id)}" data-ip="${esc(x.mesh_ip || "")}" data-lan="${esc(x.lan_cidr || "")}">${esc(x.name)} · ${esc(x.mesh_ip || "")}</option>`).join("") || '<option value="">（还没有设备）</option>'}
         </select>
         <input id="scIp" placeholder="或直接填内网 IP（如 10.0.0.109）" style="flex:1;min-width:160px;padding:6px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-family:var(--mono);font-size:12px">
         <input id="scExtra" placeholder="额外端口（可选）：65000,7000" style="min-width:170px;padding:6px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-family:var(--mono);font-size:12px">
         <button class="btn" id="scGo">扫描端口</button>
+        <button class="btn" id="scSub">扫整个内网</button>
       </div>
+      <div id="scHint" class="dim" style="font-size:11px;margin-bottom:6px"></div>
       <div id="scOut" class="dim" style="font-size:11px;margin-bottom:10px"></div>
 
       <label class="dim" style="font-size:11px">源站（第一行是<b>主</b>，下面依次是备1/备2；可跨设备）</label>
@@ -1261,6 +1263,33 @@ async function viewSites(main) {
   };
   stRender();
   main.querySelector("#stAddRow").onclick = () => { stRows.push(""); stRender(); };
+
+  const hintEl = main.querySelector("#scHint");
+  const devSel2 = main.querySelector("#scDev");
+  const showHint = () => {
+    const opt = devSel2.selectedOptions[0];
+    const cidr = opt?.dataset.lan || "";
+    hintEl.textContent = cidr
+      ? `${opt.textContent.trim()} 上报的内网网段：${cidr}（可以直接填 ${cidr.replace(/\.0\/\d+$/, ".x")} 下的地址，或点「扫整个内网」）`
+      : "这台还没上报内网网段（节点同步一次后就会出现）；也可以手动填 IP 扫";
+  };
+  devSel2.onchange = showHint; showHint();
+
+  const scSub = main.querySelector("#scSub");
+  if (scSub) scSub.onclick = async () => {
+    const out = main.querySelector("#scOut");
+    const cidr = (main.querySelector("#scDev").selectedOptions[0]?.dataset.lan || "").split(",")[0];
+    if (!cidr) return toast("这台还没上报内网网段", true);
+    out.textContent = `扫描 ${cidr} …（/24 最多 254 台，约 10 秒）`;
+    try {
+      const r = await api("/api/scan-subnet", { method: "POST", body: JSON.stringify({ cidr, ports: main.querySelector("#scExtra").value }) });
+      if (!r.found.length) { out.textContent = `${cidr} 没扫到服务`; return; }
+      out.innerHTML = `${cidr} 发现：` + r.found.map(x => `<button class="btn sm" data-port="${x.port}" data-host="${esc(x.host)}" style="margin:2px 4px 2px 0">${esc(x.host)}:${x.port}</button>`).join("");
+      out.querySelectorAll("[data-port]").forEach(b => {
+        b.onclick = () => { stRows = stRows.filter(x => x.trim()); stRows.push(`${b.dataset.host}:${b.dataset.port}`); if (!stRows.length) stRows = [""]; stRender(); toast("已加入 " + b.textContent); };
+      });
+    } catch (e) { out.textContent = e.message; }
+  };
 
   const scBtn = main.querySelector("#scGo");
   if (scBtn) scBtn.onclick = async () => {

@@ -513,7 +513,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/join/hit" && req.method === "POST") {
       const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
       const body = await readBody(req);
-      return json(res, 200, await updateNodeEndpoint(token, body?.endpoint, body?.port, body?.ts));
+      return json(res, 200, await updateNodeEndpoint(token, body?.endpoint, body?.port, body?.ts, body?.lan));
     }
 
     const dp = p.match(/^\/dp\/(dp_[a-z0-9]{8,})$/i);
@@ -791,10 +791,11 @@ TOKEN="\\$(cat /etc/wireguard/awa.token 2>/dev/null)" || exit 0
 [ -n "\\$TOKEN" ] || exit 0
 PUBIP="\\$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
 TSIP="\\$(tailscale ip -4 2>/dev/null | head -1)"
+LAN="\\$(ip -4 route 2>/dev/null | awk '/scope link/ && \\$1 !~ /^10\\.88\\./ {printf \\"%s,\\", \\$1}' | sed 's/,$//')"
 if [ -n "\\$PUBIP" ]; then
   curl -fsS -X POST "\\$SERVER/api/join/hit" -H "Authorization: Bearer \\$TOKEN" \\\\
     -H 'Content-Type: application/json' \\\\
-    -d "{\\"endpoint\\":\\"\\$PUBIP:\\$(wg show \\$IFACE listen-port 2>/dev/null || echo 51820)\\",\\"ts\\":\\"\\$TSIP\\"}" >/dev/null 2>&1 || true
+    -d "{\\"endpoint\\":\\"\\$PUBIP:\\$(wg show \\$IFACE listen-port 2>/dev/null || echo 51820)\\",\\"ts\\":\\"\\$TSIP\\",\\"lan\\":\\"\\$LAN\\"}" >/dev/null 2>&1 || true
 fi
 CODE="\\$(curl -sS -o /tmp/awa.state -w '%{http_code}' --max-time 10 \\\\
   -H "Authorization: Bearer \\$TOKEN" "\\$SERVER/api/join/state?format=shell" 2>/dev/null || echo 000)"

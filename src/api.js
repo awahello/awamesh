@@ -212,10 +212,17 @@ export function peersForNode(nodeToken, hostHeader) {
 }
 
 /** 节点每次刷新时顺带上报自己的 endpoint（公网 IP 可能变） */
-export async function updateNodeEndpoint(nodeToken, endpoint, port, tsIp) {
+export async function updateNodeEndpoint(nodeToken, endpoint, port, tsIp, lanCidr) {
   const hash = crypto.createHash("SHA256").update(String(nodeToken || "")).digest("hex");
   const self = db.prepare("SELECT * FROM devices WHERE node_token = ?").get(hash);
   if (!self) throw Object.assign(new Error("节点凭据无效"), { status: 401 });
+
+  // 节点自报的内网网段：面板据此自动推断「哪个源站属于哪台设备」并联动网关
+  if (lanCidr !== undefined) {
+    const v = String(lanCidr || "").split(",").map(x => x.trim())
+      .filter(x => /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(x)).slice(0, 6).join(",");
+    db.prepare("UPDATE devices SET lan_cidr = ? WHERE id = ?").run(v || null, self.id);
+  }
 
   // Tailscale 地址单独记录，用于在面板上显示兜底状态
   if (tsIp !== undefined) {
@@ -360,6 +367,44 @@ export function connectionHistory(deviceId, days = 3) {
 
 
 
+
+/** 扫整个 /24 网段找开着的服务（并发 40，超时 400ms） */
+export async function scanSubnet(cidr, ports) {
+  const net = await import("node:net");
+  const m = /^(\d{1,3}\.\d{1,3}\.\d{1,3})\.0\/(\d{1,2})$/.exec(String(cidr || ""));
+  if (!m || Number(m[2]) < 24) throw new Error("只支持扫描 /24 网段，例：10.0.0.0/24");
+  const base = m[1];
+  const plist = [...new Set((ports && ports.length ? ports : [80, 443, 8000, 8080, 9000]).map(Number).filter(Boolean))];
+  const hosts = [];
+  for (let i = 1; i <= 254; i++) hosts.push(`${base}.${i}`);
+
+  const checkOne = (host, port) => new Promise((resolve) => {
+    const sock = new net.Socket();
+    let done = false;
+    const fin = (ok) => { if (done) return; done = true; try { sock.destroy(); } catch { /* ignore */ } resolve(ok ? { host, port } : null); };
+    sock.setTimeout(400);
+    sock.once("connect", () => fin(true));
+    sock.once("timeout", () => fin(false));
+    sock.once("error", () => fin(false));
+    sock.connect(port, host);
+  });
+
+  const tasks = [];
+  for (const h of hosts) for (const p of plist) tasks.push(() => checkOne(h, p));
+  const found = [];
+  let idx = 0;
+  const worker = async () => {
+    while (idx < tasks.length) {
+      const t = tasks[idx++];
+      const r = await t();
+      if (r) found.push(r);
+    }
+  };
+  await Promise.all(Array.from({ length: 40 }, worker));
+  found.sort((a, b) => (a.host < b.host ? -1 : a.host > b.host ? 1 : a.port - b.port));
+  return { cidr, scanned: tasks.length, found };
+}
+
 /** 从部署端扫某台设备（或任意内网 IP）上开着的常见端口，方便挑源站 */
 export async function scanPorts(host, extraPorts = []) {
   const net = await import("node:net");
@@ -381,6 +426,87 @@ export async function scanPorts(host, extraPorts = []) {
   });
   const results = await Promise.all(ports.map(check));
   return { host, open: results.filter(Boolean).sort((a, b) => a - b), scanned: ports.length };
+}
+
+
+/* ---------- 全自动联动：源站 IP 属于哪台设备 → 自动给它配网关 ---------- */
+
+function ipToInt(ip) {
+  return String(ip).split(".").reduce((a, b) => (a << 8) + (Number(b) & 255), 0) >>> 0;
+}
+
+function ipInCidr(ip, cidr) {
+  const [net, bitsRaw] = String(cidr).split("/");
+  const bits = Number(bitsRaw);
+  if (!net || !bits) return false;
+  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+  return (ipToInt(ip) & mask) === (ipToInt(net) & mask);
+}
+
+function hostOfTarget(t) {
+  const s = String(t || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  return s.includes(":") ? s.split(":")[0] : s;
+}
+
+/** 找出某个 IP 应该由哪台设备承载：mesh IP 直接命中，或落在它的内网网段里 */
+function deviceForIp(ip) {
+  const devs = db.prepare("SELECT * FROM devices WHERE revoked_at IS NULL").all();
+  const direct = devs.find(d => d.mesh_ip === ip);
+  if (direct) return { dev: direct, cidr: "" };
+  for (const d of devs) {
+    for (const c of String(d.lan_cidr || "").split(",").map(x => x.trim()).filter(Boolean)) {
+      if (ipInCidr(ip, c)) return { dev: d, cidr: c };
+    }
+  }
+  return null;
+}
+
+/**
+ * 按当前所有「聚合入口 + 发布服务」的源站，重新计算每台设备该发布哪些网段。
+ * 新出现的自动加（同时补 gateway 角色），不再需要的自动撤，用户手填的网段保持不动。
+ */
+export async function syncAutoGateways() {
+  const sites = db.prepare("SELECT targets FROM sites").all();
+  const tunnels = db.prepare("SELECT backend FROM tunnels WHERE source = 'awamesh'").all();
+  const targets = [
+    ...sites.flatMap(s => parseTargets(s.targets)),
+    ...tunnels.flatMap(t => String(t.backend || "").split(",").map(x => x.trim())),
+  ].filter(Boolean);
+
+  // 期望：cidr -> deviceId
+  const want = new Map();
+  for (const t of targets) {
+    const ip = hostOfTarget(t);
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) continue;
+    const hit = deviceForIp(ip);
+    if (hit && hit.cidr) want.set(hit.cidr, hit.dev.id);
+  }
+
+  const devs = db.prepare("SELECT * FROM devices WHERE revoked_at IS NULL").all();
+  for (const d of devs) {
+    const oldAuto = String(d.auto_routes || "").split(",").map(x => x.trim()).filter(Boolean);
+    const newAuto = [...want.entries()].filter(([, id]) => id === d.id).map(([c]) => c);
+    if (oldAuto.join(",") === newAuto.join(",")) continue;
+
+    const manual = splitRoutes(d.routes).filter(c => !oldAuto.includes(c));
+    const routes = [...new Set([...manual, ...newAuto])];
+    let roles = String(d.roles || "node").split(",").map(x => x.trim()).filter(Boolean);
+    if (newAuto.length && !roles.includes("gateway")) roles.push("gateway");
+    if (!newAuto.length && routes.length === 0) roles = roles.filter(r => r !== "gateway");
+
+    db.prepare("UPDATE devices SET routes = ?, roles = ?, auto_routes = ? WHERE id = ?")
+      .run(routes.join(","), roles.join(","), newAuto.join(","), d.id);
+
+    const peer = db.prepare("SELECT public_key FROM wg_peers WHERE device_id = ?").get(d.id);
+    if (isManaged() && peer?.public_key) {
+      try { await wg.setAllowedIps(peer.public_key, allowedFor({ ...d, routes: routes.join(",") })); } catch { /* ignore */ }
+    }
+    const added = newAuto.filter(c => !oldAuto.includes(c));
+    const removed = oldAuto.filter(c => !newAuto.includes(c));
+    if (added.length) addEvent("device", `${d.name} 自动发布网段 ${added.join(",")}`, d.id);
+    if (removed.length) addEvent("device", `${d.name} 自动撤销网段 ${removed.join(",")}`, d.id);
+  }
+  return { devices: devs.length, routes: [...want.keys()] };
 }
 
 /** 控制台实际下发给某台设备的「对端表」——用来在面板上看完整路由 */
@@ -1218,6 +1344,10 @@ export async function api(req, res, url, body) {
     return scanPorts(host, String(body?.ports || "").split(/[,\s]+/).filter(Boolean));
   }
 
+  if (url.pathname === "/api/scan-subnet" && method === "POST") {
+    return scanSubnet(body?.cidr, String(body?.ports || "").split(/[,\s]+/).filter(Boolean));
+  }
+
   if (url.pathname === "/api/sites" && method === "GET") {
     return { ...proxyStatus(), sites: listSites() };
   }
@@ -1233,7 +1363,8 @@ export async function api(req, res, url, body) {
     db.prepare("INSERT INTO sites(id,hostname,targets,mode,note,created_at) VALUES(?,?,?,?,?,?)")
       .run(id, hostname, JSON.stringify(norm), body?.mode === "standby" ? "standby" : "lb", String(body?.note || "").slice(0, 120), now());
     addEvent("site", `新增聚合入口 ${hostname} → ${norm.length} 个源站`);
-    return { ok: true, id };
+    const auto = await syncAutoGateways().catch(() => null);
+    return { ok: true, id, auto };
   }
 
 
@@ -1247,7 +1378,8 @@ export async function api(req, res, url, body) {
     db.prepare("UPDATE sites SET targets = ?, mode = ? WHERE id = ?")
       .run(JSON.stringify(targets), body?.mode === "standby" ? "standby" : row.mode, seg[1]);
     addEvent("site", `调整 ${row.hostname} 源站顺序（${targets.length} 个）`);
-    return { ok: true, targets };
+    const auto = await syncAutoGateways().catch(() => null);
+    return { ok: true, targets, auto };
   }
 
   if (seg[0] === "sites" && seg[2] === "delete" && method === "POST") {
@@ -1255,7 +1387,8 @@ export async function api(req, res, url, body) {
     if (!row) throw new Error("不存在");
     db.prepare("DELETE FROM sites WHERE id = ?").run(seg[1]);
     addEvent("site", `删除聚合入口 ${row.hostname}`);
-    return { ok: true };
+    const auto = await syncAutoGateways().catch(() => null);
+    return { ok: true, auto };
   }
 
   if (url.pathname === "/api/sites/probe" && method === "POST") {
@@ -1924,6 +2057,7 @@ ingress:
     }
 
     addEvent("tunnel", `发布 ${hostname} → ${backend}（隧道 ${tun.name}）`);
+    await syncAutoGateways().catch(() => null);
     // 关键：连接器必须和控制台共享同一个网络命名空间，才看得到 10.88.0.0/24
     const command = token
       ? `docker run -d --name cf-${tun.name} --restart unless-stopped --network container:awamesh cloudflare/cloudflared:latest tunnel --no-autoupdate run --token ${token}`
@@ -2082,6 +2216,7 @@ ingress:
       try { await gcTunnelIngress(account, m[1], req); } catch { /* ignore */ }
     }
     addEvent("tunnel", `删除隧道 ${row.hostname}${removed ? "（已同步移除 ingress）" : ""}`);
+    await syncAutoGateways().catch(() => null);
     return { ok: true, ingressRemoved: removed, dnsRemoved };
   }
 
