@@ -104,6 +104,7 @@ const NAV = [
   ["devices", "设备"],
   ["relays", "中继节点"],
   ["publish", "发布服务"],
+  ["sites", "聚合入口"],
   ["tunnels", "Cloudflare 隧道"],
   ["events", "事件"],
   ["settings", "设置"],
@@ -165,6 +166,7 @@ async function renderView(silent = false) {
     else if (S.view === "relays") await viewRelays(main);
     else if (S.view === "tunnels") await viewTunnels(main);
     else if (S.view === "publish") await viewPublishPage(main);
+    else if (S.view === "sites") await viewSites(main);
     else if (S.view === "events") await viewEvents(main);
     else await viewSettings(main);
   } catch (err) {
@@ -1117,6 +1119,75 @@ async function viewPublishPage(main) {
     };
   });
   preview();
+}
+
+
+/* ---------------- 聚合入口：部署端反代多个源站 ---------------- */
+async function viewSites(main) {
+  const d = await api("/api/sites").catch(() => ({ sites: [], port: 0, running: false }));
+  main.innerHTML = `
+    <div class="topbar">
+      <div><h1>聚合入口</h1><div class="sub">一个域名 → 多个源站（可跨设备、可经网关），按负载或主备转发</div></div>
+      <div class="head-actions"><button class="btn" data-act="probe">探活所有源站</button></div>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-h"><b>新建</b><span>${d.running ? "监听 :" + d.port : "未启动"}</span></div>
+      <div style="display:grid;grid-template-columns:1.2fr 0.8fr;gap:12px">
+        <div><label class="dim" style="font-size:11px">对外域名（DNS 指到本机）</label>
+          <input id="stHost" placeholder="www.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
+        <div><label class="dim" style="font-size:11px">策略</label>
+          <select id="stMode" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text)">
+            <option value="lb">负载均衡（轮询）</option>
+            <option value="standby">主备（第一个为主）</option>
+          </select></div>
+      </div>
+      <label class="dim" style="font-size:11px">源站（每行一个，可跨设备：10.0.0.109:8000 / 10.0.0.105:8000 / 10.88.0.2:8000）</label>
+      <textarea id="stTargets" rows="3" placeholder="10.0.0.109:8000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text);font-family:var(--mono);font-size:12px"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px"><button class="btn primary" id="stAdd">创建</button></div>
+      <div id="stOut" class="dim" style="font-size:11px;margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><b>已配置</b><span>${(d.sites || []).length} 个域名</span></div>
+      <div class="rows">
+        <div class="row head" style="grid-template-columns:1.4fr 2fr 0.7fr 1fr 0.5fr"><div>域名</div><div>源站</div><div>策略</div><div>状态</div><div></div></div>
+        ${(d.sites || []).map(s => `
+          <div class="row" style="grid-template-columns:1.4fr 2fr 0.7fr 1fr 0.5fr">
+            <div class="cell mono" style="font-size:12px">${esc(s.hostname)}</div>
+            <div class="cell mono dim" style="font-size:11px;white-space:normal">${esc((s.targets || []).join(" , "))}</div>
+            <div class="cell dim" style="font-size:11px">${s.mode === "standby" ? "主备" : "负载均衡"}</div>
+            <div class="cell dim" style="font-size:11px">${(s.targets || []).length} 个源站</div>
+            <div style="text-align:right"><button class="btn sm danger" data-del="${esc(s.id)}">删除</button></div>
+          </div>`).join("") || `<div class="empty">还没有配置</div>`}
+      </div>
+      <p class="dim" style="font-size:11px;margin:12px 0 0">
+        用法：DNS 把域名指到本机 → 容器映射 <code>:${d.port || 8080}</code> → 访问域名即可。
+        也可以把「发布服务」或 Cloudflare 隧道的源站直接填 <code>http://127.0.0.1:${d.port || 8080}</code>，由这里再分发。
+      </p>
+    </div>`;
+
+  main.querySelector('[data-act="probe"]').onclick = async () => {
+    try { const r = await api("/api/sites/probe", { method: "POST", body: "{}" }); toast(`已探活 ${r.checked} 个源站`); render(); }
+    catch (e) { toast(e.message, true); }
+  };
+  main.querySelector("#stAdd").onclick = async () => {
+    try {
+      await api("/api/sites", { method: "POST", body: JSON.stringify({
+        hostname: main.querySelector("#stHost").value.trim(),
+        targets: main.querySelector("#stTargets").value,
+        mode: main.querySelector("#stMode").value,
+      })});
+      toast("已创建"); render();
+    } catch (e) { main.querySelector("#stOut").textContent = e.message; }
+  };
+  main.querySelectorAll("[data-del]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm("删除这个聚合入口？")) return;
+      try { await api(`/api/sites/${encodeURIComponent(b.dataset.del)}/delete`, { method: "POST", body: "{}" }); toast("已删除"); render(); }
+      catch (e) { toast(e.message, true); }
+    };
+  });
 }
 
 /* ---------------- 设置 ---------------- */

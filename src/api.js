@@ -8,6 +8,7 @@ import { wg, isManaged } from "./wgsrv.js";
 import { hostInCidr, clientConfig as clientConfigText } from "./wg.js";
 import { secretSetting, saveSecretSetting, seal, open as unseal } from "./secrets.js";
 import { startConnector, connectorStatus } from "./connector.js";
+import { listSites, probeSites, proxyStatus } from "./proxy.js";
 import { startFrps, stopFrps, frpsStatus, frpcTemplate } from "./frps.js";
 import { startFrpc, stopFrpc, frpcStatus, startTailscaled, stopTailscaled, tailscaleStatus, tailscaleUp } from "./outbound.js";
 
@@ -1182,6 +1183,38 @@ export async function api(req, res, url, body) {
 
   if (seg[0] === "devices" && seg[2] === "history" && method === "GET") {
     return { samples: connectionHistory(seg[1], 3) };
+  }
+
+
+  // ---- 聚合入口：部署端做反代，把多个源站合成一个域名 ----
+  if (url.pathname === "/api/sites" && method === "GET") {
+    return { ...proxyStatus(), sites: listSites() };
+  }
+
+  if (url.pathname === "/api/sites" && method === "POST") {
+    const hostname = String(body?.hostname || "").trim().toLowerCase();
+    const targets = (Array.isArray(body?.targets) ? body.targets : String(body?.targets || "").split(/[,\n]/))
+      .map(x => String(x).trim()).filter(Boolean);
+    if (!/^[a-z0-9.*-]+$/.test(hostname)) throw new Error("域名格式不对");
+    if (!targets.length) throw new Error("至少一个源站，例：10.0.0.109:8000");
+    const norm = targets.map(t => (/^https?:\/\//.test(t) ? t : "http://" + t));
+    const id = "site_" + crypto.randomBytes(4).toString("hex");
+    db.prepare("INSERT INTO sites(id,hostname,targets,mode,note,created_at) VALUES(?,?,?,?,?,?)")
+      .run(id, hostname, JSON.stringify(norm), body?.mode === "standby" ? "standby" : "lb", String(body?.note || "").slice(0, 120), now());
+    addEvent("site", `新增聚合入口 ${hostname} → ${norm.length} 个源站`);
+    return { ok: true, id };
+  }
+
+  if (seg[0] === "sites" && seg[2] === "delete" && method === "POST") {
+    const row = db.prepare("SELECT * FROM sites WHERE id = ?").get(seg[1]);
+    if (!row) throw new Error("不存在");
+    db.prepare("DELETE FROM sites WHERE id = ?").run(seg[1]);
+    addEvent("site", `删除聚合入口 ${row.hostname}`);
+    return { ok: true };
+  }
+
+  if (url.pathname === "/api/sites/probe" && method === "POST") {
+    return probeSites();
   }
 
   if (url.pathname === "/api/tunnels/gc" && method === "POST") {

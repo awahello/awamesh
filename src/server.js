@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { cfg, log } from "./config.js";
 import { api, joinPeer, peersForNode, updateNodeEndpoint, deployConfig, splitRoutes, deployTailscale, publicBase, relayAlive, exportBundle, probeTunnels, sampleConnections } from "./api.js";
 import { pruneSamples } from "./db.js";
+import { startProxy, probeSites } from "./proxy.js";
 import { seedIfEmpty, pruneEvents, addEvent, demoHeartbeat, clearDemo } from "./db.js";
 import {
   ensureAdminCredential, verifyCredential, sessionToken, validSession,
@@ -943,6 +944,13 @@ server.listen(cfg.port, cfg.host, () => {
   setInterval(() => { probeTunnels().catch(() => {}); }, 60_000).unref();
   // 每 60 秒给每条 mesh 连接采一次样，保留 3 天（面板「连接记录」用）
   setInterval(() => { sampleConnections().catch(() => {}); }, 60_000).unref();
+
+  // 聚合入口（本地反代）：把多个源站合成一个域名，默认 8080
+  try {
+    const pport = Number(process.env.AWA_PROXY_PORT || 8080);
+    if (pport) { startProxy(pport); log(`[proxy] 聚合入口监听 :${pport}（面板「聚合入口」配置域名与源站）`); }
+  } catch (e) { log("[proxy] 启动失败：" + e.message); }
+  setInterval(() => { probeSites().catch(() => {}); }, 60_000).unref();
   setInterval(() => { const n = pruneSamples(3); if (n) log(`[db] 清理了 ${n} 条 3 天前的连接记录`); }, 6 * 3600_000).unref();
   setInterval(() => probeRelays().catch(() => {}), 60_000).unref();
 });

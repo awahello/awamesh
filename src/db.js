@@ -259,3 +259,13 @@ export function pruneSamples(days = 3, perDevice = 500) {
   } catch { /* ignore */ }
   return n;
 }
+
+// 聚合入口：一个域名 → 多个源站（负载/主备）
+db.exec(`CREATE TABLE IF NOT EXISTS sites (
+  id TEXT PRIMARY KEY,
+  hostname TEXT NOT NULL,
+  targets TEXT NOT NULL,
+  mode TEXT DEFAULT 'lb',
+  note TEXT,
+  created_at INTEGER
+)`);
