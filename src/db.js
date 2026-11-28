@@ -226,3 +226,23 @@ export function seedIfEmpty() {
   addEvent("tunnel", "nas.akkdiy.cn 后端不可达（设备 3 天未上线）", null);
   addEvent("device", "win-laptop 上线", "d_win");
 }
+
+// 每次 mesh 连接的采样（保留 3 天，用于在面板上看路由/延迟/流量变化）
+db.exec(`CREATE TABLE IF NOT EXISTS conn_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  endpoint TEXT,
+  handshake INTEGER,
+  rx INTEGER,
+  tx INTEGER,
+  path TEXT
+)`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_samples_dev ON conn_samples(device_id, at)");
+
+export function pruneSamples(days = 3) {
+  const cut = Math.floor(Date.now() / 1000) - days * 86400;
+  try {
+    return db.prepare("DELETE FROM conn_samples WHERE at < ?").run(cut).changes || 0;
+  } catch { return 0; }
+}

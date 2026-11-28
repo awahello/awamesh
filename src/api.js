@@ -13,14 +13,17 @@ import { startFrpc, stopFrpc, frpcStatus, startTailscaled, stopTailscaled, tails
 
 const r = (n, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
 
+let ovCache = null;
+
 function overview(devices) {
   const online = devices.filter(d => d.online && !d.revoked_at);
   const relayPaths = online.filter(d => d.path === "relay");
   const directRatio = online.length ? Math.round(((online.length - relayPaths.length) / online.length) * 100) : 0;
   const relays = listRelays();
   const tunnels = listTunnels();
+  const own = tunnels.filter(t => t.source === "awamesh");   // 只统计面板发布的，CF 手动的单独算
   const usedGb = relays.reduce((s, x) => s + (x.used_gb || 0), 0);
-  const healthyTunnels = tunnels.filter(t => t.health === "ok").length;
+  const healthyTunnels = own.filter(t => t.health === "ok").length;
   const avgMs = online.filter(d => d.latency_ms).reduce((s, d) => s + d.latency_ms, 0) /
     (online.filter(d => d.latency_ms).length || 1);
 
@@ -28,7 +31,7 @@ function overview(devices) {
     devices: { total: devices.length, online: online.length, relay: relayPaths.length },
     directRatio,
     usedGb,
-    tunnels: { total: tunnels.length, ok: healthyTunnels },
+    tunnels: { total: own.length, ok: healthyTunnels, external: tunnels.length - own.length },
     avgMs: Math.round(avgMs),
     meshCidr: cfg.meshCidr,
     relays: relays.length,
@@ -294,6 +297,35 @@ export async function meshHeal() {
 }
 
 
+
+
+/** 采样一次所有节点的连接状态（endpoint / 握手 / 流量），供「连接记录」查看 */
+export async function sampleConnections() {
+  if (!isManaged()) return 0;
+  let dump = [];
+  try { dump = await wg.dump(); } catch { return 0; }
+
+  const rows = db.prepare(`SELECT d.id, d.name, d.endpoint, d.reported_endpoint, d.via_ts, p.public_key
+    FROM devices d JOIN wg_peers p ON p.device_id = d.id WHERE d.revoked_at IS NULL`).all();
+  const t = now();
+  let n = 0;
+  for (const r of rows) {
+    const p = dump.find(x => x.publicKey === r.public_key);
+    if (!p) continue;
+    const path = r.via_ts ? "tailscale" : (p.endpoint && r.endpoint && p.endpoint.split(":")[0] === r.endpoint.split(":")[0] ? "direct" : "relay");
+    db.prepare("INSERT INTO conn_samples(device_id, at, endpoint, handshake, rx, tx, path) VALUES(?,?,?,?,?,?,?)")
+      .run(r.id, t, p.endpoint || "", p.handshake || 0, p.rxBytes || 0, p.txBytes || 0, path);
+    n++;
+  }
+  return n;
+}
+
+/** 某台设备最近的连接记录（默认 3 天） */
+export function connectionHistory(deviceId, days = 3) {
+  const cut = now() - days * 86400;
+  const rows = db.prepare("SELECT * FROM conn_samples WHERE device_id = ? AND at >= ? ORDER BY at DESC LIMIT 600").all(deviceId, cut);
+  return rows.reverse();
+}
 
 /** 清理悬空 ingress：把隧道里「数据库已经没这条」的 hostname 摘掉 */
 export async function gcTunnelIngress(accountId, tunnelId, req) {
@@ -893,7 +925,16 @@ export async function api(req, res, url, body) {
   if (url.pathname === "/api/health") return { ok: true, version: cfg.version };
 
   if (url.pathname === "/api/overview") {
-    const devices = await be.devices();
+    // wg show / 中继探测偶尔会慢，超过 3 秒就用上次的缓存，别让页面一直转圈
+    let devices = null;
+    try {
+      devices = await Promise.race([
+        be.devices(),
+        new Promise((r) => setTimeout(() => r(null), 3000)),
+      ]);
+    } catch { devices = null; }
+    if (devices) ovCache = devices;
+    devices = devices || ovCache || [];
     return {
       ...overview(devices),
       groups: groupByTag(devices),
@@ -1030,6 +1071,10 @@ export async function api(req, res, url, body) {
     const base = host || (effectiveEndpoint(req.headers.host || "").split(":")[0] || "");
     const cfg = frpcTemplate(base, Number(url.searchParams.get("local")) || 51820, Number(url.searchParams.get("remote")) || 51820);
     return { host: base, config: cfg };
+  }
+
+  if (seg[0] === "devices" && seg[2] === "history" && method === "GET") {
+    return { samples: connectionHistory(seg[1], 3) };
   }
 
   if (url.pathname === "/api/tunnels/gc" && method === "POST") {

@@ -20,6 +20,13 @@ const fmtTime = (ts) => {
   if (d < 86400) return Math.floor(d / 3600) + " 小时前";
   return Math.floor(d / 86400) + " 天前";
 };
+const fmtBytes = (n) => {
+  n = Number(n) || 0;
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  if (n < 1024 ** 3) return (n / 1024 / 1024).toFixed(1) + " MB";
+  return (n / 1024 ** 3).toFixed(2) + " GB";
+};
 const fmtGb = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + " TB" : Math.round(n) + " GB");
 
 const ERR_HINT = [
@@ -175,7 +182,7 @@ async function viewOverview(main, silent) {
       <div class="kpi"><div class="l">在线设备</div><div class="v">${d.devices.online}<small> / ${d.devices.total}</small></div></div>
       <div class="kpi"><div class="l">本月中继流量</div><div class="v">${fmtGb(d.usedGb)}</div></div>
       <div class="kpi"><div class="l">直连占比</div><div class="v">${d.directRatio}<small>%</small></div></div>
-      <div class="kpi"><div class="l">隧道健康</div><div class="v">${d.tunnels.ok}<small> / ${d.tunnels.total}</small></div></div>
+      <div class="kpi"><div class="l">隧道健康${d.tunnels.external ? `（另有 ${d.tunnels.external} 条外部）` : ""}</div><div class="v">${d.tunnels.ok}<small> / ${d.tunnels.total}</small></div></div>
     </div>
     <div class="grid c2">
       <div class="card">
@@ -384,6 +391,61 @@ function openEditDevice(dev) {
   };
 }
 
+
+/* ---------------- 连接记录（每 60 秒一条，保留 3 天） ---------------- */
+async function openHistory(dev) {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = `<div class="modal" style="width:min(720px,100%)">
+    <h3>连接记录 · ${esc(dev.name)}</h3>
+    <div class="sub">每 60 秒采样一次（endpoint / 握手 / 流量增量），保留 3 天</div>
+    <div id="histBody" class="empty">加载中…</div>
+    <div class="modal-actions"><button class="btn" data-act="close">关闭</button></div>
+  </div>`;
+  document.body.appendChild(mask);
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  mask.querySelector('[data-act="close"]').onclick = close;
+
+  try {
+    const r = await api(`/api/devices/${encodeURIComponent(dev.id)}/history`);
+    const rows = (r.samples || []).slice(-80).reverse();
+    if (!rows.length) {
+      mask.querySelector("#histBody").innerHTML = '<div class="empty">还没有采样数据（服务端每 60 秒采一次，等 1 分钟再看）</div>';
+      return;
+    }
+    const seen = rows.filter(x => x.handshake);
+    const lastHs = seen.length ? Math.max(...seen.map(x => x.handshake)) : 0;
+    let pktRx = 0, pktTx = 0;
+    for (let i = 1; i < rows.length; i++) {
+      pktRx += Math.max(0, (rows[i - 1].rx || 0) - (rows[i].rx || 0));
+      pktTx += Math.max(0, (rows[i - 1].tx || 0) - (rows[i].tx || 0));
+    }
+    const paths = {};
+    rows.forEach(x => { paths[x.path] = (paths[x.path] || 0) + 1; });
+    mask.querySelector("#histBody").innerHTML = `
+      <div style="display:flex;gap:16px;font-size:12px;margin-bottom:10px;flex-wrap:wrap">
+        <span>最后握手：<b>${lastHs ? fmtTime(lastHs) : "从未"}</b></span>
+        <span>采样数：<b>${rows.length}</b></span>
+        <span>区间流量：<b>↑${fmtBytes(pktTx)} ↓${fmtBytes(pktRx)}</b></span>
+        <span>路径：${Object.entries(paths).map(([k, v]) => `<span class="tag">${k}×${v}</span>`).join(" ")}</span>
+      </div>
+      <div class="rows" style="max-height:44vh;overflow:auto">
+        <div class="row head" style="grid-template-columns:1.1fr 1.6fr 1fr 0.8fr 0.8fr"><div>时间</div><div>endpoint</div><div>路径</div><div>握手</div><div>流量</div></div>
+        ${rows.map(x => `<div class="row" style="grid-template-columns:1.1fr 1.6fr 1fr 0.8fr 0.8fr">
+          <div class="cell dim" style="font-size:11px">${new Date(x.at * 1000).toLocaleTimeString("zh-CN", { hour12: false })}</div>
+          <div class="cell mono dim" style="font-size:11px">${esc(x.endpoint || "-")}</div>
+          <div class="cell" style="font-size:11px"><span class="tag ${x.path === "direct" ? "ok" : x.path === "tailscale" ? "info" : "warn"}">${esc(x.path || "-")}</span></div>
+          <div class="cell dim" style="font-size:11px">${x.handshake ? fmtTime(x.handshake) : "—"}</div>
+          <div class="cell mono dim" style="font-size:11px">${fmtBytes(x.rx)} / ${fmtBytes(x.tx)}</div>
+        </div>`).join("")}
+      </div>`;
+  } catch (e) {
+    mask.querySelector("#histBody").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
 /* ---------------- 设备「⋯」更多操作 ---------------- */
 function openMore(dev) {
   const mask = document.createElement("div");
@@ -393,6 +455,7 @@ function openMore(dev) {
       <h3>${esc(dev.name)}</h3>
       <div class="sub">${esc(dev.mesh_ip || "")} · ${esc((dev.roles || []).join(" + ") || "节点")}</div>
       <div style="display:grid;gap:8px">
+        <button class="btn" data-op="hist">连接记录（3 天）</button>
         <button class="btn" data-op="edit">编辑配置（名字/标签/网段/P2P/TS）</button>
         <button class="btn" data-op="roles">角色与网段</button>
         <button class="btn" data-op="publish">发布服务到域名</button>
@@ -411,6 +474,7 @@ function openMore(dev) {
     b.onclick = async () => {
       const op = b.dataset.op;
       if (op === "close") return close();
+      if (op === "hist") { close(); return openHistory(dev); }
       if (op === "edit") { close(); return openEditDevice(dev); }
       if (op === "roles") { close(); return openRoles(dev); }
       if (op === "publish") { close(); return openPublish(dev); }
@@ -493,7 +557,7 @@ async function viewRelays(main) {
         <div class="card">
           <div class="card-h">
             <b style="display:flex;align-items:center;gap:7px">
-              <span class="dot ${!r.enabled ? "off" : r.state === "online" ? "ok" : r.state === "offline" ? "bad" : "warn"}"></span>${esc(r.region)} · ${esc(r.name.split("·").pop().trim())}
+              <span class="dot ${!r.enabled ? "off" : r.state === "online" ? "ok" : r.state === "offline" ? "bad" : "warn"}"></span>${esc(r.device_id ? r.name.replace(/\s*·\s*中继$/, "") : r.region + " · " + r.name.split("·").pop().trim())}
             </b>
             ${r.kind === "builtin" ? `<span class="tag info">内置</span>` : r.visibility === "private" ? `<span class="tag info">仅内网</span>` : `<span class="tag">公网</span>`}
           </div>
@@ -1702,11 +1766,11 @@ function openRoles(dev) {
       <h3>角色 · ${esc(dev.name)}</h3>
       <div class="sub">一台机器可以同时担任多个角色；勾选后控制台会在 60 秒内把改动下发到节点</div>
       <div style="display:grid;gap:8px">
-        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" checked disabled> <b>节点</b><span class="dim" style="font-size:11px">拿到 mesh 地址，能和其他设备互通（必选）</span></label>
-        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rRelay" ${has("relay") ? "checked" : ""}> <b>中继</b><span class="dim" style="font-size:11px">打洞失败时给别的节点转发（DERP）</span></label>
-        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rGateway" ${has("gateway") ? "checked" : ""}> <b>网关</b><span class="dim" style="font-size:11px">把它所在的局域网发布进 mesh（填 10.0.0.0/16 这种，其它设备就能直接访问 10.0.0.x）</span></label>
-        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rExit" ${has("exit") ? "checked" : ""}> <b>出口</b><span class="dim" style="font-size:11px">可作为全流量出口，客户端侧自选</span></label>
-        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rServer" ${has("server") ? "checked" : ""}> <b>服务端</b><span class="dim" style="font-size:11px">承载对外服务，配合 CF 隧道发布</span></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" checked disabled> <b>节点</b><span class="dim" style="font-size:11px">必选。这台机器进 mesh，拿到 10.88.0.x 地址</span></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rRelay" ${has("relay") ? "checked" : ""}> <b>中继</b><span class="dim" style="font-size:11px">可选。别人直连不上时，流量经它转发（需要另装 derper，装完「中继节点」页会显示在线）</span></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rGateway" ${has("gateway") ? "checked" : ""}> <b>网关</b><span class="dim" style="font-size:11px">可选。把它的局域网带进 mesh：填 10.0.0.0/24 后，别的设备就能直接访问 10.0.0.2 这类内网 IP</span></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rExit" ${has("exit") ? "checked" : ""}> <b>出口</b><span class="dim" style="font-size:11px">可选。让别的设备把全部上网流量从这台走（只对配置了的客户端生效）</span></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rServer" ${has("server") ? "checked" : ""}> <b>服务端</b><span class="dim" style="font-size:11px">标记用途：这台专门跑对外服务（配合「发布服务」用 CF 隧道暴露）</span></label>
       </div>
       <label class="dim" style="font-size:11px;margin-top:12px;display:block">发布的内网段（逗号分隔，网关角色用）</label>
       <input id="rRoutes" value="${esc((dev.routes || "").toString())}" placeholder="192.168.1.0/24, 10.0.10.0/24" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0 12px">

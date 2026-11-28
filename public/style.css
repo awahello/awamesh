@@ -164,6 +164,9 @@ a { color: var(--info); text-decoration: none; }
     minmax(0, 1.45fr) minmax(0, 0.85fr) 300px;
 }
 .devices .row > div { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 角色列：多个标签要能换行，不能变成 serv… */
+.devices .row > div:nth-child(3) { white-space: normal; overflow: visible; }
+.devices .row > div:nth-child(3) .tag { font-size: 10.5px; margin: 1px 2px 1px 0; }
 .devices .row > div:last-child { overflow: visible; }
 .events .row { grid-template-columns: 0.8fr 3fr 1fr; }
 
