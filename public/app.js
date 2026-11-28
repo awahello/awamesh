@@ -2188,9 +2188,11 @@ async function openDeploy(dev) {
       try {
         const t = await api(`/api/devices/${encodeURIComponent(dev.id)}/ts-command`, { method: "POST", body: "{}" });
         mask.querySelector("#winBox").innerHTML = `
-          <div class="dim" style="font-size:11px;margin-top:10px">该机器上执行（先装 tailscale；这条会让它加入 tailnet，之后面板这里会显示 TS 100.x）：</div>
-          <div class="code">${esc(t.command)}</div>
-          <div class="dim" style="font-size:11px">${t.installed ? "当前已上报 Tailscale 地址：" + esc(t.tsIp) : "当前还没有上报 Tailscale 地址"}</div>`;
+          <div class="dim" style="font-size:11px;margin-top:10px">通用（Linux / Debian / 群晖）：没装会自动装，再 up；带 45 秒超时，卡住会打印诊断</div>
+          <div class="code block" style="max-height:180px">${esc(t.command)}</div>
+          <div class="dim" style="font-size:11px;margin-top:10px">OpenWrt 专用（netfilter-mode=off，避免和 fw4/mwan3 打架）</div>
+          <div class="code block" style="max-height:180px">${esc(t.openwrt)}</div>
+          <div class="dim" style="font-size:11px">主机名会写成 <b>${esc(t.hostname)}</b>（Tailscale 只接受小写字母/数字/连字符）· ${t.installed ? "当前已上报：" + esc(t.tsIp) : "当前还没有上报 Tailscale 地址"}</div>`;
       } catch (e) { toast(e.message, true); }
     };
     mask.querySelector('[data-act="win"]').onclick = () => {

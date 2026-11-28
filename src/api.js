@@ -1508,11 +1508,36 @@ ingress:
     if (!dev) throw new Error("设备不存在");
     const p = tsProfile();
     if (!p.authkey) throw new Error("还没配 Tailscale authkey（设置 → 兜底通道）");
-    const cmd = p.loginServer
-      ? `tailscale up --authkey '${p.authkey}' --hostname '${tsHostname(`${dev.name}-awa`)}' --login-server '${p.loginServer}' --accept-routes`
-      : `tailscale up --authkey '${p.authkey}' --hostname '${tsHostname(`${dev.name}-awa`)}' --accept-routes`;
+    const host = tsHostname(`${dev.name}-awa`);
+    const loginArg = p.loginServer ? ` --login-server '${p.loginServer}'` : "";
+
+    // 一条自包含脚本：没装就装（OpenWrt 用 opkg，其余用官方脚本），再 up，并带超时与诊断
+    const cmd = [
+      "set -e",
+      "if ! command -v tailscale >/dev/null 2>&1; then",
+      "  if command -v opkg >/dev/null 2>&1; then",
+      "    opkg update && opkg install tailscale",
+      "    /etc/init.d/tailscale enable && /etc/init.d/tailscale start",
+      "  else",
+      "    curl -fsSL https://tailscale.com/install.sh | sh",
+      "  fi",
+      "fi",
+      `timeout 45 tailscale up --authkey '${p.authkey}' --hostname '${host}'${loginArg} --accept-routes --reset \\`,
+      "  || { echo '✗ 加入失败/超时，诊断信息：'; tailscale status 2>&1 | head -20; exit 1; }",
+      "echo '✓ 已加入 tailnet：'$(tailscale ip -4 | head -1)",
+    ].join("\n");
+
+    // OpenWrt 专用：netfilter 模式常需要 off，否则会和 mwan3/fw4 打架
+    const owrt = [
+      "opkg update && opkg install tailscale",
+      "/etc/init.d/tailscale enable && /etc/init.d/tailscale start",
+      `timeout 45 tailscale up --authkey '${p.authkey}' --hostname '${host}'${loginArg} --accept-routes --netfilter-mode=off --reset \\`,
+      "  || { echo '✗ 失败/超时：'; tailscale status 2>&1 | head -20; exit 1; }",
+      "echo '✓ '$(tailscale ip -4 | head -1)",
+    ].join("\n");
+
     addEvent("device", `为 ${dev.name} 生成 Tailscale 加入命令`, seg[1]);
-    return { command: cmd, installed: !!dev.ts_ip, tsIp: dev.ts_ip || "" };
+    return { command: cmd, openwrt: owrt, hostname: host, installed: !!dev.ts_ip, tsIp: dev.ts_ip || "" };
   }
 
 
