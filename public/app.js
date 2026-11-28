@@ -1002,13 +1002,17 @@ async function viewPublishPage(main) {
     <div class="card" style="margin-bottom:12px">
       <label class="dim" style="font-size:11px">选目标（勾选设备 → 填端口；「地址」可改成该设备内网的 IP，比如 10.0.0.109）</label>
       <div class="rows" style="margin:6px 0 10px">
-        <div class="row head" style="grid-template-columns:36px 1.2fr 1.3fr 0.6fr"><div></div><div>设备</div><div>地址（默认 mesh IP）</div><div>端口</div></div>
+        <div class="row head" style="grid-template-columns:36px 0.5fr 1.2fr 1.3fr 0.6fr 0.8fr"><div></div><div>优先</div><div>设备</div><div>地址（默认 mesh IP）</div><div>端口</div><div>排序</div></div>
         ${list.map((d, i) => `
-          <div class="row" style="grid-template-columns:36px 1.2fr 1.3fr 0.6fr">
+          <div class="row" style="grid-template-columns:36px 0.5fr 1.2fr 1.3fr 0.6fr 0.8fr">
             <div class="cell"><input type="checkbox" class="pvPick" data-i="${i}" ${i === 0 ? "checked" : ""}></div>
+            <div class="cell"><span class="tag pvRank" data-i="${i}" ${i === 0 ? "" : 'style="display:none"'}>${i === 0 ? "主" : ""}</span></div>
             <div class="cell"><b>${esc(d.name)}</b> <span class="dim mono" style="font-size:11px">${esc(d.mesh_ip || "")}</span></div>
             <div class="cell"><input class="pvIp" data-i="${i}" value="${esc(d.mesh_ip || "")}" style="width:100%;padding:4px 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-family:var(--mono);font-size:11.5px"></div>
             <div class="cell"><input class="pvPort" data-i="${i}" placeholder="8000" style="width:100%;padding:4px 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:11.5px"></div>
+            <div class="cell" style="display:flex;gap:4px">
+              <button class="btn sm" data-pvup="${i}">▲</button><button class="btn sm" data-pvdown="${i}">▼</button>
+            </div>
           </div>`).join("") || `<div class="empty">还没有设备</div>`}
       </div>
 
@@ -1056,11 +1060,39 @@ async function viewPublishPage(main) {
       </div>
     </div>`;
 
+  let order = list.map((_, i) => String(i)).filter(x => x === "0");   // 选中顺序即优先级
+  const rank = () => {
+    main.querySelectorAll(".pvPick").forEach(cb => {
+      const i = cb.dataset.i;
+      const badge = main.querySelector(`.pvRank[data-i="${i}"]`);
+      if (!badge) return;
+      const pos = order.indexOf(i);
+      if (pos < 0) { badge.style.display = "none"; return; }
+      badge.style.display = "";
+      badge.textContent = pos === 0 ? "主" : "备" + pos;
+      badge.className = "tag pvRank" + (pos === 0 ? " ok" : "");
+    });
+  };
+  main.querySelectorAll(".pvPick").forEach(cb => {
+    cb.onchange = () => {
+      const i = cb.dataset.i;
+      if (cb.checked) { if (!order.includes(i)) order.push(i); }
+      else order = order.filter(x => x !== i);
+      rank(); preview();
+    };
+  });
+  main.querySelectorAll("[data-pvup]").forEach(b => {
+    b.onclick = () => { const i = b.dataset.pvup; const p = order.indexOf(i); if (p > 0) { [order[p - 1], order[p]] = [order[p], order[p - 1]]; rank(); preview(); } };
+  });
+  main.querySelectorAll("[data-pvdown]").forEach(b => {
+    b.onclick = () => { const i = b.dataset.pvdown; const p = order.indexOf(i); if (p >= 0 && p < order.length - 1) { [order[p + 1], order[p]] = [order[p], order[p + 1]]; rank(); preview(); } };
+  });
+
   const collect = () => {
     const out = [];
-    main.querySelectorAll(".pvPick").forEach(cb => {
-      if (!cb.checked) return;
-      const i = cb.dataset.i;
+    order.forEach(i => {
+      const cb = main.querySelector(`.pvPick[data-i="${i}"]`);
+      if (!cb || !cb.checked) return;
       const ip = (main.querySelector(`.pvIp[data-i="${i}"]`).value || "").trim();
       const port = (main.querySelector(`.pvPort[data-i="${i}"]`).value || "").trim();
       if (ip && port) out.push(`${ip}:${port}`);
@@ -1142,9 +1174,12 @@ async function viewSites(main) {
             <option value="standby">主备（第一个为主）</option>
           </select></div>
       </div>
-      <label class="dim" style="font-size:11px">源站（每行一个，<b>顺序即优先级</b>：第一行是主，之后是备1/备2；可跨设备）</label>
-      <textarea id="stTargets" rows="3" placeholder="10.0.0.109:8000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text);font-family:var(--mono);font-size:12px"></textarea>
-      <div style="display:flex;gap:8px;margin-top:8px"><button class="btn primary" id="stAdd">创建</button></div>
+      <label class="dim" style="font-size:11px">源站（第一行是<b>主</b>，下面依次是备1/备2；可跨设备）</label>
+      <div id="stRows" style="display:grid;gap:6px;margin:6px 0"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <button class="btn sm" id="stAddRow">+ 添加源站</button>
+        <button class="btn primary" id="stAdd">创建</button>
+      </div>
       <div id="stOut" class="dim" style="font-size:11px;margin-top:8px"></div>
     </div>
 
@@ -1175,6 +1210,33 @@ async function viewSites(main) {
       </p>
     </div>`;
 
+  const stRowsEl = main.querySelector("#stRows");
+  let stRows = [""];
+  const stRender = () => {
+    stRowsEl.innerHTML = stRows.map((v, i) => `
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="tag ${i === 0 ? "ok" : ""}" style="min-width:44px;justify-content:center">${i === 0 ? "主" : "备" + i}</span>
+        <input class="stRow" data-i="${i}" value="${esc(v)}" placeholder="10.0.0.109:8000" style="flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-family:var(--mono);font-size:12px">
+        <button class="btn sm" data-up="${i}" ${i === 0 ? "disabled" : ""}>▲</button>
+        <button class="btn sm" data-down="${i}" ${i === stRows.length - 1 ? "disabled" : ""}>▼</button>
+        <button class="btn sm danger" data-rm="${i}" ${stRows.length === 1 ? "disabled" : ""}>×</button>
+      </div>`).join("");
+    stRowsEl.querySelectorAll(".stRow").forEach(inp => {
+      inp.oninput = () => { stRows[Number(inp.dataset.i)] = inp.value; };
+    });
+    stRowsEl.querySelectorAll("[data-rm]").forEach(b => {
+      b.onclick = () => { stRows.splice(Number(b.dataset.rm), 1); if (!stRows.length) stRows = [""]; stRender(); };
+    });
+    stRowsEl.querySelectorAll("[data-up]").forEach(b => {
+      b.onclick = () => { const i = Number(b.dataset.up); [stRows[i - 1], stRows[i]] = [stRows[i], stRows[i - 1]]; stRender(); };
+    });
+    stRowsEl.querySelectorAll("[data-down]").forEach(b => {
+      b.onclick = () => { const i = Number(b.dataset.down); [stRows[i + 1], stRows[i]] = [stRows[i], stRows[i + 1]]; stRender(); };
+    });
+  };
+  stRender();
+  main.querySelector("#stAddRow").onclick = () => { stRows.push(""); stRender(); };
+
   main.querySelector('[data-act="probe"]').onclick = async () => {
     try { const r = await api("/api/sites/probe", { method: "POST", body: "{}" }); toast(`已探活 ${r.checked} 个源站`); render(); }
     catch (e) { toast(e.message, true); }
@@ -1183,7 +1245,7 @@ async function viewSites(main) {
     try {
       await api("/api/sites", { method: "POST", body: JSON.stringify({
         hostname: main.querySelector("#stHost").value.trim(),
-        targets: main.querySelector("#stTargets").value,
+        targets: stRows.map(x => x.trim()).filter(Boolean).join("\n"),
         mode: main.querySelector("#stMode").value,
       })});
       toast("已创建"); render();
