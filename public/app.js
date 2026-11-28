@@ -1193,7 +1193,8 @@ async function viewSites(main) {
         <select id="scDev" style="padding:6px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);min-width:200px">
           ${(d.devices || []).filter(x => !x.revoked_at).map(x => `<option value="${esc(x.id)}" data-ip="${esc(x.mesh_ip || "")}">${esc(x.name)} · ${esc(x.mesh_ip || "")}</option>`).join("") || '<option value="">（还没有设备）</option>'}
         </select>
-        <input id="scIp" placeholder="或直接填内网 IP（如 10.0.0.109）" style="flex:1;min-width:180px;padding:6px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-family:var(--mono);font-size:12px">
+        <input id="scIp" placeholder="或直接填内网 IP（如 10.0.0.109）" style="flex:1;min-width:160px;padding:6px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-family:var(--mono);font-size:12px">
+        <input id="scExtra" placeholder="额外端口（可选）：65000,7000" style="min-width:170px;padding:6px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-family:var(--mono);font-size:12px">
         <button class="btn" id="scGo">扫描端口</button>
       </div>
       <div id="scOut" class="dim" style="font-size:11px;margin-bottom:10px"></div>
@@ -1270,7 +1271,8 @@ async function viewSites(main) {
     if (!host) return toast("选一台设备或填 IP", true);
     out.textContent = `扫描 ${host} …`;
     try {
-      const r = await api("/api/scan", { method: "POST", body: JSON.stringify({ deviceId: ip ? "" : devId, host }) });
+      const extra = (main.querySelector("#scExtra").value || "").trim();
+      const r = await api("/api/scan", { method: "POST", body: JSON.stringify({ deviceId: ip ? "" : devId, host, ports: extra }) });
       if (!r.open.length) { out.textContent = `${host} 上没扫到常见端口（可手动填端口后点扫描重试）`; return; }
       out.innerHTML = `${host} 开着：` + r.open.map(p => `<button class="btn sm" data-port="${p}" style="margin:2px 4px 2px 0">${p}</button>`).join("");
       out.querySelectorAll("[data-port]").forEach(b => {

@@ -1543,6 +1543,20 @@ ingress:
     const loginArg = p.loginServer ? ` --login-server '${p.loginServer}'` : "";
 
     // 一条自包含脚本：没装就装（OpenWrt 用 opkg，其余用官方脚本），再 up，并带超时与诊断
+    // 失败时的统一诊断：把最常见的原因直接写在提示里，省得来回猜
+    const diag = [
+      "  || {",
+      "       echo '✗ 加入失败/超时，诊断：'",
+      "       tailscale status 2>&1 | head -20",
+      "       echo ''",
+      "       echo '常见原因：'",
+      "       echo '  1) key 已用过或没勾 Reusable → 后台重新生成（务必勾 Reusable）'",
+      "       echo '  2) 提示 nodekey already exists → tailscale logout 后再试，或换 hostname'",
+      "       echo '  3) 提示 context canceled / NoState → 上一次被 Ctrl-C 打断，先 logout'",
+      "       exit 1",
+      "     }",
+    ];
+
     const cmd = [
       "set -e",
       "if ! command -v tailscale >/dev/null 2>&1; then",
@@ -1553,8 +1567,10 @@ ingress:
       "    curl -fsSL https://tailscale.com/install.sh | sh",
       "  fi",
       "fi",
-      `timeout 45 tailscale up --authkey '${p.authkey}' --hostname '${host}'${loginArg} --accept-routes --reset \\`,
-      "  || { echo '✗ 加入失败/超时，诊断信息：'; tailscale status 2>&1 | head -20; exit 1; }",
+      "# 上一次可能被 Ctrl-C 打断，留下 NoState 残留：先登出（失败无所谓）",
+      "tailscale logout >/dev/null 2>&1 || true",
+      `timeout 60 tailscale up --authkey '${p.authkey}' --hostname '${host}'${loginArg} --accept-routes --reset \\`,
+      ...diag,
       "echo '✓ 已加入 tailnet：'$(tailscale ip -4 | head -1)",
     ].join("\n");
 
@@ -1562,8 +1578,9 @@ ingress:
     const owrt = [
       "opkg update && opkg install tailscale",
       "/etc/init.d/tailscale enable && /etc/init.d/tailscale start",
-      `timeout 45 tailscale up --authkey '${p.authkey}' --hostname '${host}'${loginArg} --accept-routes --netfilter-mode=off --reset \\`,
-      "  || { echo '✗ 失败/超时：'; tailscale status 2>&1 | head -20; exit 1; }",
+      "tailscale logout >/dev/null 2>&1 || true",
+      `timeout 60 tailscale up --authkey '${p.authkey}' --hostname '${host}'${loginArg} --accept-routes --netfilter-mode=off --reset \\`,
+      ...diag,
       "echo '✓ '$(tailscale ip -4 | head -1)",
     ].join("\n");
 
