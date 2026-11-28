@@ -407,7 +407,8 @@ async function openHistory(dev) {
   mask.className = "mask";
   mask.innerHTML = `<div class="modal" style="width:min(720px,100%)">
     <h3>连接记录 · ${esc(dev.name)}</h3>
-    <div class="sub">每 60 秒采样一次（endpoint / 握手 / 流量增量），保留 3 天</div>
+    <div class="sub">上半部分是控制台下发给它的完整对端表；下半部分是每 60 秒的采样（保留 3 天）</div>
+    <div id="routeBody"></div>
     <div id="histBody" class="empty">加载中…</div>
     <div class="modal-actions"><button class="btn" data-act="close">关闭</button></div>
   </div>`;
@@ -418,6 +419,25 @@ async function openHistory(dev) {
   mask.querySelector('[data-act="close"]').onclick = close;
 
   try {
+    const rt = await api(`/api/devices/${encodeURIComponent(dev.id)}/routes`).catch(() => ({ rows: [], p2p: false }));
+    const rb = mask.querySelector("#routeBody");
+    if (rb) {
+      rb.innerHTML = `
+        <div class="dim" style="font-size:11px;margin-bottom:6px">
+          当前路由表 · P2P ${rt.p2p ? "已开启" : "已关闭"} · ${(rt.rows || []).length} 个对端
+        </div>
+        <div class="rows" style="margin-bottom:14px">
+          <div class="row head" style="grid-template-columns:1.2fr 1.1fr 1.6fr 1.4fr 1fr"><div>对端</div><div>Mesh 地址</div><div>allowed-ips</div><div>endpoint</div><div>路径</div></div>
+          ${(rt.rows || []).map(x => `<div class="row" style="grid-template-columns:1.2fr 1.1fr 1.6fr 1.4fr 1fr">
+            <div class="cell"><b>${esc(x.name)}</b></div>
+            <div class="cell mono" style="font-size:11px">${esc(x.meshIp || "")}</div>
+            <div class="cell mono dim" style="font-size:10.5px;white-space:normal">${esc(x.allowed || "")}</div>
+            <div class="cell mono dim" style="font-size:11px">${esc(x.endpoint || "-")}</div>
+            <div class="cell"><span class="tag ${x.via === "直连" ? "ok" : "warn"}">${esc(x.via)}</span></div>
+          </div>`).join("") || `<div class="empty">没有其它对端</div>`}
+        </div>`;
+    }
+
     const r = await api(`/api/devices/${encodeURIComponent(dev.id)}/history`);
     const rows = (r.samples || []).slice(-80).reverse();
     if (!rows.length) {

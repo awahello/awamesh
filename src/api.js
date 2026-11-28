@@ -143,6 +143,18 @@ export async function joinPeer(body) {
 
 /** 节点用 nodeToken 拉取全网 peer 列表，用于打全直连 */
 
+/** 控制台自身的 WireGuard endpoint（节点把别的节点当"经控制台"时会用它） */
+function hubEp(hostHeader) {
+  try {
+    const bk = backend();
+    const pf = bk.profile ? (bk.profile() || {}) : {};
+    const ep = String(pf.endpoint || "").trim();
+    if (ep) return ep;
+  } catch { /* ignore */ }
+  const host = process.env.AWA_PUBLIC_HOST || String(hostHeader || "").split(":")[0] || "";
+  return host ? `${host}:${process.env.AWA_WG_PORT || setting("wg_port") || 51820}` : "";
+}
+
 function rowMeshIp(r) {
   return r.mesh_ip && String(r.mesh_ip).includes(".");
 }
@@ -162,13 +174,7 @@ export function peersForNode(nodeToken, hostHeader) {
   // 这样节点上**已经装好的旧脚本**也会在下一轮把 endpoint 改对，不需要登机器重装脚本。
   // 数据流：A → 控制台 → B（控制台需要 ip_forward=1，启动时自动开）。
   const p2pGlobal = setting("p2p") === "1";   // 默认关闭：保证所有设备互通，直连是可选优化
-  const hubEndpoint = (() => {
-    const pf = (() => { try { const bk = backend(); return bk.profile ? (bk.profile() || {}) : {}; } catch { return {}; } })();
-    const ep = String(pf.endpoint || "").trim();
-    if (ep) return ep;
-    const host = process.env.AWA_PUBLIC_HOST || String(hostHeader || "").split(":")[0] || "";
-    return host ? `${host}:${process.env.AWA_WG_PORT || setting("wg_port") || 51820}` : "";
-  })();
+  const hubEndpoint = hubEp(hostHeader);
 
   const peers = rows
     .filter(r => r.id !== self.id && (p2pGlobal && r.p2p !== 0 ? true : !!rowMeshIp(r)))
@@ -314,7 +320,7 @@ export async function sampleConnections() {
     if (!p) continue;
     const path = r.via_ts ? "tailscale" : (p.endpoint && r.endpoint && p.endpoint.split(":")[0] === r.endpoint.split(":")[0] ? "direct" : "relay");
     db.prepare("INSERT INTO conn_samples(device_id, at, endpoint, handshake, rx, tx, path) VALUES(?,?,?,?,?,?,?)")
-      .run(r.id, t, p.endpoint || "", p.handshake || 0, p.rxBytes || 0, p.txBytes || 0, path);
+      .run(r.id, t, p.endpoint || "", p.handshake || 0, p.rx || 0, p.tx || 0, path);
     n++;
 
     // P2P 自愈：开了直连却连续 3 分钟握不上手 → 自动回落中继，避免黑洞
@@ -340,6 +346,32 @@ export function connectionHistory(deviceId, days = 3) {
   const cut = now() - days * 86400;
   const rows = db.prepare("SELECT * FROM conn_samples WHERE device_id = ? AND at >= ? ORDER BY at DESC LIMIT 600").all(deviceId, cut);
   return rows.reverse();
+}
+
+
+/** 控制台实际下发给某台设备的「对端表」——用来在面板上看完整路由 */
+export function routeTableFor(deviceId, hostHeader) {
+  const self = db.prepare("SELECT * FROM devices WHERE id = ?").get(deviceId);
+  if (!self) throw new Error("设备不存在");
+  const p2pGlobal = setting("p2p") === "1";
+  const hub = hubEp(hostHeader);
+  const rows = db.prepare(`SELECT d.id, d.name, d.mesh_ip, d.endpoint, d.reported_endpoint, d.wg_port, d.routes, d.p2p, d.via_ts, p.public_key
+    FROM devices d JOIN wg_peers p ON p.device_id = d.id WHERE d.revoked_at IS NULL AND d.id != ?`).all(deviceId);
+
+  return rows.map(r => {
+    const direct = p2pGlobal && r.p2p !== 0 && r.endpoint
+      ? (r.endpoint.includes(":") ? r.endpoint : `${r.endpoint}:${r.wg_port || 51820}`)
+      : "";
+    const ep = direct || hub;
+    return {
+      name: r.name,
+      meshIp: r.mesh_ip,
+      allowed: allowedFor(r),
+      endpoint: ep,
+      via: direct ? (r.endpoint === r.reported_endpoint ? "直连" : "直连（实际地址）") : "经控制台",
+      publicKey: (r.public_key || "").slice(0, 12) + "…",
+    };
+  });
 }
 
 /** 清理悬空 ingress：把隧道里「数据库已经没这条」的 hostname 摘掉 */
@@ -1086,6 +1118,10 @@ export async function api(req, res, url, body) {
     const base = host || (effectiveEndpoint(req.headers.host || "").split(":")[0] || "");
     const cfg = frpcTemplate(base, Number(url.searchParams.get("local")) || 51820, Number(url.searchParams.get("remote")) || 51820);
     return { host: base, config: cfg };
+  }
+
+  if (seg[0] === "devices" && seg[2] === "routes" && method === "GET") {
+    return { rows: routeTableFor(seg[1], req.headers.host), p2p: setting("p2p") === "1" };
   }
 
   if (seg[0] === "devices" && seg[2] === "history" && method === "GET") {
