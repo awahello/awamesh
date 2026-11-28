@@ -134,7 +134,12 @@ export async function joinPeer(body) {
     endpoint,
     mtu: pf.mtu || 1420,
     dns: pf.dns || "",
-    allowedIps: [subnet, ...(pf.lanRoutes ? pf.lanRoutes.split(",").map(x => x.trim()).filter(Boolean) : [])].join(","),
+    // 客户端要能访问「网关设备发布的网段」，所以把它们一并写进 AllowedIPs
+    allowedIps: [subnet, ...new Set([
+      ...(pf.lanRoutes ? pf.lanRoutes.split(",").map(x => x.trim()).filter(Boolean) : []),
+      ...db.prepare("SELECT routes FROM devices WHERE revoked_at IS NULL AND IFNULL(routes,'') != ''").all()
+        .flatMap(r => splitRoutes(r.routes)),
+    ])].join(","),
     applied,
     nodeToken,
   };
@@ -311,7 +316,7 @@ export async function sampleConnections() {
   let dump = [];
   try { dump = await wg.dump(); } catch { return 0; }
 
-  const rows = db.prepare(`SELECT d.id, d.name, d.endpoint, d.reported_endpoint, d.via_ts, d.p2p, d.p2p_miss, p.public_key
+  const rows = db.prepare(`SELECT d.id, d.name, d.endpoint, d.reported_endpoint, d.via_ts, d.p2p, d.p2p_miss, d.p2p_retry_at, p.public_key
     FROM devices d JOIN wg_peers p ON p.device_id = d.id WHERE d.revoked_at IS NULL`).all();
   const t = now();
   let n = 0;
@@ -327,15 +332,19 @@ export async function sampleConnections() {
     if (r.p2p !== 0 && !r.via_ts) {
       const age = t - (p.handshake || 0);
       if (!p.handshake || age > 600) {
-        const miss = (r._miss || 0) + 1;
+        const miss = (r.p2p_miss || 0) + 1;
         db.prepare("UPDATE devices SET p2p_miss = ? WHERE id = ?").run(miss, r.id);
         if (miss >= 3) {
-          db.prepare("UPDATE devices SET p2p = 0, p2p_miss = 0 WHERE id = ?").run(r.id);
+          db.prepare("UPDATE devices SET p2p = 0, p2p_miss = 0, p2p_retry_at = ? WHERE id = ?").run(t, r.id);
           addEvent("device", `${r.name} 直连 3 分钟没握手，已自动回落中继`, r.id);
         }
       } else if (r.p2p_miss) {
         db.prepare("UPDATE devices SET p2p_miss = 0 WHERE id = ?").run(r.id);
       }
+    } else if (r.p2p === 0 && r.endpoint && (t - (r.p2p_retry_at || 0)) > 1800) {
+      // 回落后每 30 分钟重试一次直连：能直连就切回，不能就再回落
+      db.prepare("UPDATE devices SET p2p = 1, p2p_miss = 0, p2p_retry_at = ? WHERE id = ?").run(t, r.id);
+      addEvent("device", `${r.name} 定时重试直连`, r.id);
     }
   }
   return n;
@@ -501,12 +510,23 @@ function tsProfile() {
 }
 
 /** 节点用部署凭据换取兜底配置（authkey 直接给节点，属于一次性引导凭据） */
+/** Tailscale 的 --hostname 只接受 DNS label：小写字母/数字/连字符，且不能首尾是连字符 */
+function tsHostname(name, fallback = "awamesh-node") {
+  let h = String(name || "").toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 40);
+  if (!h || !/^[a-z0-9]/.test(h)) h = `${fallback}-${Math.random().toString(36).slice(2, 6)}`;
+  return h;
+}
+
 export function deployTailscale(token) {
   const hash = crypto.createHash("SHA256").update(String(token || "")).digest("hex");
   const dev = db.prepare("SELECT * FROM devices WHERE node_token = ?").get(hash);
   if (!dev) throw Object.assign(new Error("凭据无效"), { status: 401 });
   const p = tsProfile();
-  return { authkey: p.authkey, loginServer: p.loginServer, hostname: dev.name };
+  return { authkey: p.authkey, loginServer: p.loginServer, hostname: dev.name, tsName: tsHostname(`${dev.name}-awa`) };
 }
 
 
@@ -1075,7 +1095,7 @@ export async function api(req, res, url, body) {
       startTailscaled();
       await new Promise((r) => setTimeout(r, 1500));
       try {
-        const r = tailscaleUp(key, body?.hostname || "awamesh-console", setting("ts_login") || "");
+        const r = tailscaleUp(key, tsHostname(body?.hostname || "awamesh-console"), setting("ts_login") || "");
         addEvent("settings", `控制台加入 tailnet：${r.ip}`);
         return { ...r, ...tailscaleStatus() };
       } catch (e) {
@@ -1125,6 +1145,39 @@ export async function api(req, res, url, body) {
 
   if (seg[0] === "devices" && seg[2] === "routes" && method === "GET") {
     return { rows: routeTableFor(seg[1], req.headers.host), p2p: setting("p2p") !== "0" };
+  }
+
+
+  // 重试直连：把自动回落过的设备重新打开 P2P，试一次
+  if (seg[0] === "devices" && seg[2] === "p2p-retry" && method === "POST") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+    if (!dev.endpoint) throw new Error("这台还没有可用的公网地址，无法直连");
+    db.prepare("UPDATE devices SET p2p = 1, p2p_miss = 0, p2p_retry_at = ? WHERE id = ?").run(now(), dev.id);
+    if (isManaged()) {
+      try { await wg.setEndpoint(db.prepare("SELECT public_key FROM wg_peers WHERE device_id = ?").get(dev.id).public_key, dev.endpoint); } catch { /* ignore */ }
+    }
+    addEvent("device", `${dev.name} 重试直连（目标 ${dev.endpoint}）`, dev.id);
+    return { ok: true, endpoint: dev.endpoint };
+  }
+
+  // 直连诊断：从控制台看这台能不能被连、和其它设备的路径
+  if (seg[0] === "devices" && seg[2] === "diag" && method === "GET") {
+    const dev = db.prepare("SELECT * FROM devices WHERE id = ?").get(seg[1]);
+    if (!dev) throw new Error("设备不存在");
+    const peer = db.prepare("SELECT * FROM conn_samples WHERE device_id = ? ORDER BY at DESC LIMIT 1").get(dev.id);
+    const others = db.prepare(`SELECT d.name, d.mesh_ip, d.endpoint FROM devices d
+      WHERE d.revoked_at IS NULL AND d.id != ?`).all(dev.id);
+    return {
+      name: dev.name,
+      p2p: dev.p2p !== 0,
+      p2pMiss: dev.p2p_miss || 0,
+      learned: dev.endpoint || "",
+      reported: dev.reported_endpoint || "",
+      mismatch: !!(dev.endpoint && dev.reported_endpoint && dev.endpoint.split(":")[0] !== dev.reported_endpoint.split(":")[0]),
+      lastSample: peer || null,
+      others: others.map(o => ({ name: o.name, meshIp: o.mesh_ip, endpoint: o.endpoint || "" })),
+    };
   }
 
   if (seg[0] === "devices" && seg[2] === "history" && method === "GET") {
@@ -1409,8 +1462,8 @@ ingress:
     const p = tsProfile();
     if (!p.authkey) throw new Error("还没配 Tailscale authkey（设置 → 兜底通道）");
     const cmd = p.loginServer
-      ? `tailscale up --authkey '${p.authkey}' --hostname '${dev.name}-awa' --login-server '${p.loginServer}' --accept-routes`
-      : `tailscale up --authkey '${p.authkey}' --hostname '${dev.name}-awa' --accept-routes`;
+      ? `tailscale up --authkey '${p.authkey}' --hostname '${tsHostname(`${dev.name}-awa`)}' --login-server '${p.loginServer}' --accept-routes`
+      : `tailscale up --authkey '${p.authkey}' --hostname '${tsHostname(`${dev.name}-awa`)}' --accept-routes`;
     addEvent("device", `为 ${dev.name} 生成 Tailscale 加入命令`, seg[1]);
     return { command: cmd, installed: !!dev.ts_ip, tsIp: dev.ts_ip || "" };
   }

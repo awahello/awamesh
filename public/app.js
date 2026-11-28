@@ -480,6 +480,8 @@ function openMore(dev) {
       <div class="sub">${esc(dev.mesh_ip || "")} · ${esc((dev.roles || []).join(" + ") || "节点")}</div>
       <div style="display:grid;gap:8px">
         <button class="btn" data-op="hist">连接记录（3 天）</button>
+        <button class="btn" data-op="retry">重试直连</button>
+        <button class="btn" data-op="diag">连接诊断</button>
         <button class="btn" data-op="edit">编辑配置（名字/标签/网段/P2P/TS）</button>
         <button class="btn" data-op="roles">角色与网段</button>
         <button class="btn" data-op="publish">发布服务到域名</button>
@@ -499,6 +501,29 @@ function openMore(dev) {
       const op = b.dataset.op;
       if (op === "close") return close();
       if (op === "hist") { close(); return openHistory(dev); }
+      if (op === "retry") {
+        try {
+          const r = await api(`/api/devices/${encodeURIComponent(dev.id)}/p2p-retry`, { method: "POST", body: "{}" });
+          close(); toast(`已重试直连（目标 ${r.endpoint}），60 秒后看路径`);
+          setTimeout(renderView, 1500);
+        } catch (e) { toast(e.message, true); }
+        return;
+      }
+      if (op === "diag") {
+        try {
+          const d2 = await api(`/api/devices/${encodeURIComponent(dev.id)}/diag`);
+          mask.querySelector(".modal").insertAdjacentHTML("beforeend", `
+            <div class="code block" style="max-height:200px">${esc(
+              `P2P：${d2.p2p ? "开启" : "已回落中继"}\n` +
+              `控制台学到的地址：${d2.learned || "-"}\n` +
+              `对方自报地址：${d2.reported || "-"}${d2.mismatch ? "（不一致，自报可能是代理出口）" : ""}\n` +
+              `自动回落计数：${d2.p2pMiss}\n` +
+              (d2.lastSample ? `最近采样：${d2.lastSample.endpoint || "-"} · ${d2.lastSample.path} · 握手 ${d2.lastSample.handshake || 0}\n` : "还没有采样\n") +
+              `其它节点：\n` + d2.others.map(o => `  ${o.name}  ${o.meshIp}  ${o.endpoint || "无公网"}`).join("\n")
+            )}</div>`);
+        } catch (e) { toast(e.message, true); }
+        return;
+      }
       if (op === "edit") { close(); return openEditDevice(dev); }
       if (op === "roles") { close(); return openRoles(dev); }
       if (op === "publish") { close(); return openPublish(dev); }
