@@ -770,6 +770,43 @@ function autoBackupOnce() {
 /** 只装/修「对端同步」脚本：节点上已经有 awa.token 时用这个补，不用重装整条链路 */
 function peersOnlyScript(req) {
   const base = publicBase(req);
+  const inner = [
+    "#!/bin/sh",
+    "SERVER=\"@@SERVER@@\"",
+    "IFACE=\"awa0\"",
+    "[ -f /etc/wireguard/awa.iface ] && IFACE=\"$(cat /etc/wireguard/awa.iface)\"",
+    "TOKEN=\"$(cat /etc/wireguard/awa.token 2>/dev/null)\" || exit 0",
+    "[ -n \"$TOKEN\" ] || exit 0",
+    "PUBIP=\"$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)\"",
+    "TSIP=\"$(tailscale ip -4 2>/dev/null | head -1)\"",
+    "LAN=\"$(ip -4 route 2>/dev/null | awk '/scope link/ && $1 !~ /^10\\.88\\./ {printf \"%s,\", $1}' | sed 's/,$//')\"",
+    "PORT=\"$(wg show \"$IFACE\" listen-port 2>/dev/null || echo 51820)\"",
+    "[ -n \"$PUBIP\" ] && curl -fsS -X POST \"$SERVER/api/join/hit\" \\",
+    "  -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' \\",
+    "  -d \"{\\\"endpoint\\\":\\\"$PUBIP:$PORT\\\",\\\"ts\\\":\\\"$TSIP\\\",\\\"lan\\\":\\\"$LAN\\\"}\" >/dev/null 2>&1 || true",
+    "CODE=\"$(curl -sS -o /tmp/awa.state -w '%{http_code}' --max-time 10 \\",
+    "  -H \"Authorization: Bearer $TOKEN\" \"$SERVER/api/join/state?format=shell\" 2>/dev/null || echo 000)\"",
+    "case \"$CODE\" in",
+    "  200) ;;",
+    "  401|403)",
+    "    echo \"awamesh: 凭据已失效（设备被删除或吊销），正在清理本机配置\" >&2",
+    "    command -v wg-quick >/dev/null 2>&1 && wg-quick down \"$IFACE\" >/dev/null 2>&1 || true",
+    "    ip link del \"$IFACE\" >/dev/null 2>&1 || true",
+    "    rm -f \"/etc/wireguard/$IFACE.conf\" /etc/wireguard/awa.token /etc/wireguard/awa.iface",
+    "    if command -v systemctl >/dev/null 2>&1; then",
+    "      systemctl disable --now awa-peers.timer >/dev/null 2>&1 || true",
+    "      rm -f /etc/systemd/system/awa-peers.timer /etc/systemd/system/awa-peers.service",
+    "      systemctl daemon-reload >/dev/null 2>&1 || true",
+    "    fi",
+    "    crontab -l 2>/dev/null | grep -v awa-peers | crontab - 2>/dev/null || true",
+    "    rm -f /usr/local/bin/awa-peers",
+    "    exit 0",
+    "    ;;",
+    "  *) exit 0 ;;",
+    "esac",
+    "sh /tmp/awa.state >/dev/null 2>&1 || true",
+  ].join("\n");
+
   return `#!/bin/sh
 # awamesh 对端同步脚本安装器（不动 WireGuard 接口，只补定时任务）
 set -u
@@ -782,74 +819,30 @@ BINDIR=/usr/local/bin
 [ -d "$BINDIR" ] || BINDIR=/usr/bin
 [ -d "$BINDIR" ] || BINDIR=/tmp
 
-cat > "$BINDIR/awa-peers" <<PEERS
-#!/bin/sh
-SERVER="$SERVER"
-IFACE="awa0"
-[ -f /etc/wireguard/awa.iface ] && IFACE="\\$(cat /etc/wireguard/awa.iface)"
-TOKEN="\\$(cat /etc/wireguard/awa.token 2>/dev/null)" || exit 0
-[ -n "\\$TOKEN" ] || exit 0
-PUBIP="\\$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
-TSIP="\\$(tailscale ip -4 2>/dev/null | head -1)"
-LAN="\\$(ip -4 route 2>/dev/null | awk '/scope link/ && \\$1 !~ /^10\\.88\\./ {printf \\"%s,\\", \\$1}' | sed 's/,$//')"
-if [ -n "\\$PUBIP" ]; then
-  curl -fsS -X POST "\\$SERVER/api/join/hit" -H "Authorization: Bearer \\$TOKEN" \\\\
-    -H 'Content-Type: application/json' \\\\
-    -d "{\\"endpoint\\":\\"\\$PUBIP:\\$(wg show \\$IFACE listen-port 2>/dev/null || echo 51820)\\",\\"ts\\":\\"\\$TSIP\\",\\"lan\\":\\"\\$LAN\\"}" >/dev/null 2>&1 || true
-fi
-CODE="\\$(curl -sS -o /tmp/awa.state -w '%{http_code}' --max-time 10 \\\\
-  -H "Authorization: Bearer \\$TOKEN" "\\$SERVER/api/join/state?format=shell" 2>/dev/null || echo 000)"
-STRIKE="/etc/wireguard/awa.401"
-case "\\$CODE" in
-  200) : > "\\$STRIKE" 2>/dev/null || true ;;
-  401)
-    n=\\$(cat "\\$STRIKE" 2>/dev/null || echo 0); n=\\$((n + 1)); echo "\\$n" > "\\$STRIKE"
-    [ "\\$n" -lt 3 ] && { echo "awamesh: 401 (\\$n/3)，下一轮再确认" >&2; exit 0; }
-    command -v wg-quick >/dev/null 2>&1 && wg-quick down "\\$IFACE" >/dev/null 2>&1
-    if [ -f /etc/config/network ] && command -v uci >/dev/null 2>&1; then
-      uci -q delete network.awa0 >/dev/null 2>&1; uci -q delete network.wgawa0 >/dev/null 2>&1
-      uci -q delete firewall.awamesh >/dev/null 2>&1; uci commit network >/dev/null 2>&1
-      uci commit firewall >/dev/null 2>&1; /etc/init.d/network reload >/dev/null 2>&1
-    fi
-    rm -f /etc/wireguard/"\\$IFACE.conf" /etc/wireguard/awa.token /etc/wireguard/awa.401
-    rm -f /usr/local/bin/awa-peers /usr/bin/awa-peers
-    crontab -l 2>/dev/null | grep -v awa-peers | crontab - 2>/dev/null || true
-    exit 0
-    ;;
-  *) exit 0 ;;
-esac
-while read -r kind a b c _rest; do
-  case "\\$kind" in
-    PEER)
-      if [ -n "\\$c" ] && [ "\\$c" != "-" ]; then
-        wg set "\\$IFACE" peer "\\$a" allowed-ips "\\$b" endpoint "\\$c" persistent-keepalive 25 2>/dev/null || true
-      else
-        wg set "\\$IFACE" peer "\\$a" allowed-ips "\\$b" persistent-keepalive 25 2>/dev/null || true
-      fi ;;
-    FLAG)
-      if [ "\\$a" = "forward" ] && [ "\\$b" = "1" ]; then
-        sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
-      fi ;;
-  esac
-done < /tmp/awa.state
-# 保留 /tmp/awa.state 方便排查（每次覆盖，不占空间）
+cat > "$BINDIR/awa-peers" <<'PEERS'
+${inner}
 PEERS
-sed -i "s#@@SERVER@@#$SERVER#; s#@@IFACE@@#$IFACE#" "$BINDIR/awa-peers" 2>/dev/null || {
-    sed -e "s#@@SERVER@@#$SERVER#" -e "s#@@IFACE@@#$IFACE#" "$BINDIR/awa-peers" > /tmp/awa.peers.new && mv /tmp/awa.peers.new "$BINDIR/awa-peers"
-  }
-  chmod +x "$BINDIR/awa-peers"
+
+# 占位符替换（用这里已知的 SERVER）
+if sed --version >/dev/null 2>&1; then
+  sed -i "s#@@SERVER@@#$SERVER#g" "$BINDIR/awa-peers"
+else
+  sed "s#@@SERVER@@#$SERVER#g" "$BINDIR/awa-peers" > "$BINDIR/awa-peers.tmp" && mv "$BINDIR/awa-peers.tmp" "$BINDIR/awa-peers"
+fi
+chmod +x "$BINDIR/awa-peers"
+
 echo "  ✓ 已写入 $BINDIR/awa-peers"
 
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-  cat >/etc/systemd/system/awa-peers.service <<'EOF'
+  cat >/etc/systemd/system/awa-peers.service <<EOF
 [Unit]
 Description=awamesh peer sync
 After=network-online.target
 [Service]
 Type=oneshot
-ExecStart=BINDIR_PLACEHOLDER/awa-peers
+ExecStart=$BINDIR/awa-peers
 EOF
-  cat >/etc/systemd/system/awa-peers.timer <<'EOF'
+  cat >/etc/systemd/system/awa-peers.timer <<EOF
 [Unit]
 Description=awamesh peer sync timer
 [Timer]
@@ -858,7 +851,6 @@ OnUnitActiveSec=60s
 [Install]
 WantedBy=timers.target
 EOF
-  sed -i "s#BINDIR_PLACEHOLDER#$BINDIR#" /etc/systemd/system/awa-peers.service
   systemctl daemon-reload >/dev/null 2>&1 || true
   systemctl enable --now awa-peers.timer >/dev/null 2>&1 || true
   echo "  ✓ 已启用 awa-peers.timer（每 60 秒）"

@@ -1000,19 +1000,20 @@ async function viewPublishPage(main) {
     </div>
 
     <div class="card" style="margin-bottom:12px">
-      <label class="dim" style="font-size:11px">选目标（勾选设备 → 填端口；「地址」可改成该设备内网的 IP，比如 10.0.0.109）</label>
+      <label class="dim" style="font-size:11px">选目标（「优先」里直接选 主 / 备1 / 备2；地址可改成该设备内网的 IP，比如 10.0.0.109）</label>
       <div class="rows" style="margin:6px 0 10px">
-        <div class="row head" style="grid-template-columns:36px 0.5fr 1.2fr 1.3fr 0.6fr 0.8fr"><div></div><div>优先</div><div>设备</div><div>地址（默认 mesh IP）</div><div>端口</div><div>排序</div></div>
+        <div class="row head" style="grid-template-columns:0.9fr 1.2fr 1.3fr 0.6fr"><div>优先</div><div>设备</div><div>地址（默认 mesh IP）</div><div>端口</div></div>
         ${list.map((d, i) => `
-          <div class="row" style="grid-template-columns:36px 0.5fr 1.2fr 1.3fr 0.6fr 0.8fr">
-            <div class="cell"><input type="checkbox" class="pvPick" data-i="${i}" ${i === 0 ? "checked" : ""}></div>
-            <div class="cell"><span class="tag pvRank" data-i="${i}" ${i === 0 ? "" : 'style="display:none"'}>${i === 0 ? "主" : ""}</span></div>
+          <div class="row" style="grid-template-columns:0.9fr 1.2fr 1.3fr 0.6fr">
+            <div class="cell">
+              <select class="pvPri" data-i="${i}" style="width:100%;padding:4px 6px;border-radius:6px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:11.5px">
+                <option value="">不参与</option>
+                ${list.map((_, k) => `<option value="${k}">${k === 0 ? "主" : "备" + k}</option>`).join("")}
+              </select>
+            </div>
             <div class="cell"><b>${esc(d.name)}</b> <span class="dim mono" style="font-size:11px">${esc(d.mesh_ip || "")}</span></div>
             <div class="cell"><input class="pvIp" data-i="${i}" value="${esc(d.mesh_ip || "")}" style="width:100%;padding:4px 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-family:var(--mono);font-size:11.5px"></div>
             <div class="cell"><input class="pvPort" data-i="${i}" placeholder="8000" style="width:100%;padding:4px 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:11.5px"></div>
-            <div class="cell" style="display:flex;gap:4px">
-              <button class="btn sm" data-pvup="${i}">▲</button><button class="btn sm" data-pvdown="${i}">▼</button>
-            </div>
           </div>`).join("") || `<div class="empty">还没有设备</div>`}
       </div>
 
@@ -1060,49 +1061,36 @@ async function viewPublishPage(main) {
       </div>
     </div>`;
 
-  let order = [];   // 勾选顺序即优先级，初始化时按实际勾选同步
-  main.querySelectorAll(".pvPick").forEach(cb => { if (cb.checked) order.push(cb.dataset.i); });
-  const rank = () => {
-    main.querySelectorAll(".pvPick").forEach(cb => {
-      const i = cb.dataset.i;
-      const badge = main.querySelector(`.pvRank[data-i="${i}"]`);
-      if (!badge) return;
-      const pos = order.indexOf(i);
-      if (pos < 0) {
-        badge.style.display = "none";
-        const up = main.querySelector(`[data-pvup="${i}"]`), down = main.querySelector(`[data-pvdown="${i}"]`);
-        if (up) up.disabled = true;
-        if (down) down.disabled = true;
-        return;
-      }
-      const up = main.querySelector(`[data-pvup="${i}"]`), down = main.querySelector(`[data-pvdown="${i}"]`);
-      if (up) up.disabled = pos === 0;
-      if (down) down.disabled = pos === order.length - 1;
-      badge.style.display = "";
-      badge.textContent = pos === 0 ? "主" : "备" + pos;
-      badge.className = "tag pvRank" + (pos === 0 ? " ok" : "");
+  let order = [];   // 数组顺序 = 优先级（第 0 个是主）
+  const prioEls = () => Array.from(main.querySelectorAll(".pvPri"));
+
+  const rebuildOrder = () => {
+    // 按每个下拉里选的序号重排；空值表示不参与
+    const picked = prioEls()
+      .map(el => ({ i: el.dataset.i, k: el.value === "" ? -1 : Number(el.value) }))
+      .filter(x => x.k >= 0)
+      .sort((a, b) => a.k - b.k);
+    order = picked.map(x => x.i);
+  };
+
+  const refreshPrioOptions = () => {
+    // 已占用的序号在下拉里置灰，避免两台都选「主」
+    const used = new Set(prioEls().filter(el => el.value !== "").map(el => el.value));
+    prioEls().forEach(el => {
+      Array.from(el.options).forEach((o, idx) => {
+        if (idx === 0) return;
+        o.disabled = used.has(o.value) && el.value !== o.value;
+      });
     });
   };
-  main.querySelectorAll(".pvPick").forEach(cb => {
-    cb.onchange = () => {
-      const i = cb.dataset.i;
-      if (cb.checked) { if (!order.includes(i)) order.push(i); }
-      else order = order.filter(x => x !== i);
-      rank(); preview();
-    };
-  });
-  main.querySelectorAll("[data-pvup]").forEach(b => {
-    b.onclick = () => { const i = b.dataset.pvup; const p = order.indexOf(i); if (p > 0) { [order[p - 1], order[p]] = [order[p], order[p - 1]]; rank(); preview(); } };
-  });
-  main.querySelectorAll("[data-pvdown]").forEach(b => {
-    b.onclick = () => { const i = b.dataset.pvdown; const p = order.indexOf(i); if (p >= 0 && p < order.length - 1) { [order[p + 1], order[p]] = [order[p], order[p + 1]]; rank(); preview(); } };
+
+  prioEls().forEach(el => {
+    el.onchange = () => { rebuildOrder(); refreshPrioOptions(); preview(); };
   });
 
   const collect = () => {
     const out = [];
     order.forEach(i => {
-      const cb = main.querySelector(`.pvPick[data-i="${i}"]`);
-      if (!cb || !cb.checked) return;
       const ip = (main.querySelector(`.pvIp[data-i="${i}"]`).value || "").trim();
       const port = (main.querySelector(`.pvPort[data-i="${i}"]`).value || "").trim();
       if (ip && port) out.push(`${ip}:${port}`);
