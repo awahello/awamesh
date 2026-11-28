@@ -999,6 +999,17 @@ async function viewPublishPage(main) {
       <div class="head-actions"><button class="btn" data-act="gotoTun">隧道与连接器</button></div>
     </div>
 
+    ${!tun.cfEnabled ? `
+      <div class="card" style="margin-bottom:12px;border-color:var(--info)">
+        <b>还没有配置 Cloudflare</b>
+        <div class="dim" style="font-size:11.5px;margin-top:4px">
+          发布服务需要 Cloudflare API Token（Zone:DNS:Edit + Account:Cloudflare Tunnel:Edit），还要一个域名。
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button class="btn primary" data-act="goCf">去设置 Cloudflare</button>
+          <button class="btn" data-act="goCfHelp">需要哪些权限？</button>
+        </div>
+      </div>` : ""}
     <div class="card" style="margin-bottom:12px">
       <label class="dim" style="font-size:11px">选目标（「优先」里直接选 主 / 备1 / 备2；地址可改成该设备内网的 IP，比如 10.0.0.109）</label>
       <div class="rows" style="margin:6px 0 10px">
@@ -1109,6 +1120,20 @@ async function viewPublishPage(main) {
   main.querySelectorAll("input").forEach(i => { i.oninput = preview; i.onchange = preview; });
 
   main.querySelector('[data-act="gotoTun"]').onclick = () => { S.view = "tunnels"; render(); };
+  const goCf = main.querySelector('[data-act="goCf"]');
+  if (goCf) goCf.onclick = () => { S.view = "settings"; render(); setTimeout(() => {
+    const el = document.querySelector("#cfToken") || document.querySelector('[data-anchor="cf"]');
+    if (el) { el.scrollIntoView({ block: "center" }); try { el.focus(); } catch { /* ignore */ } }
+  }, 400); };
+  const goCfHelp = main.querySelector('[data-act="goCfHelp"]');
+  if (goCfHelp) goCfHelp.onclick = () => showCode("Cloudflare Token 需要什么权限", [
+    "1) 打开 https://dash.cloudflare.com/profile/api-tokens",
+    "2) Create Token → 自定义模板，添加：",
+    "   · Account → Cloudflare Tunnel → Edit",
+    "   · Zone → DNS → Edit（选中你的域名所在 zone）",
+    "3) 复制 token（只显示一次），粘到面板「设置 → Cloudflare」",
+    "4) Account ID 在域名概览页右下角可以看到",
+  ].join("\n"));
   main.querySelector("#pvProbe").onclick = async () => {
     try { await api("/api/tunnels/probe", { method: "POST", body: "{}" }); toast("已探活"); render(); }
     catch (e) { toast(e.message, true); }
@@ -1167,6 +1192,7 @@ async function viewSites(main) {
 
     <div class="card" style="margin-bottom:12px">
       <div class="card-h"><b>新建</b><span>${d.running ? "监听 :" + d.port : "未启动"}</span></div>
+      ${d.running ? "" : `<div class="dim" style="font-size:11.5px;margin-bottom:10px;color:var(--warn)">聚合入口没起来：检查容器是否映射了 ${d.port || 8080} 端口（compose 里加 "8080:8080"）</div>`}
       <div style="display:grid;grid-template-columns:1.2fr 0.8fr;gap:12px">
         <div><label class="dim" style="font-size:11px">对外域名（DNS 指到本机）</label>
           <input id="stHost" placeholder="www.example.com" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0"></div>
