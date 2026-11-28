@@ -1074,7 +1074,7 @@ async function viewPublishPage(main) {
     const sub = main.querySelector("#pvSub").value.trim();
     const host = z ? (sub ? `${sub}.${z}` : z) : "（先选根域名）";
     const ts = collect();
-    main.querySelector("#pvPreview").textContent = `${host}  →  ${ts.length ? ts.map(t => `http://${t}`).join("  ·  ") : "（至少勾一台并填端口）"}`;
+    main.querySelector("#pvPreview").textContent = `${host}  →  ${ts.length ? ts.map((t, i) => `${i === 0 ? "主" : "备" + i}:http://${t}`).join("   ") : "（至少勾一台并填端口）"}`;
   };
   main.querySelectorAll("input").forEach(i => { i.oninput = preview; i.onchange = preview; });
 
@@ -1142,25 +1142,33 @@ async function viewSites(main) {
             <option value="standby">主备（第一个为主）</option>
           </select></div>
       </div>
-      <label class="dim" style="font-size:11px">源站（每行一个，可跨设备：10.0.0.109:8000 / 10.0.0.105:8000 / 10.88.0.2:8000）</label>
+      <label class="dim" style="font-size:11px">源站（每行一个，<b>顺序即优先级</b>：第一行是主，之后是备1/备2；可跨设备）</label>
       <textarea id="stTargets" rows="3" placeholder="10.0.0.109:8000" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);margin:4px 0;color:var(--text);font-family:var(--mono);font-size:12px"></textarea>
       <div style="display:flex;gap:8px;margin-top:8px"><button class="btn primary" id="stAdd">创建</button></div>
       <div id="stOut" class="dim" style="font-size:11px;margin-top:8px"></div>
     </div>
 
     <div class="card">
-      <div class="card-h"><b>已配置</b><span>${(d.sites || []).length} 个域名</span></div>
-      <div class="rows">
-        <div class="row head" style="grid-template-columns:1.4fr 2fr 0.7fr 1fr 0.5fr"><div>域名</div><div>源站</div><div>策略</div><div>状态</div><div></div></div>
-        ${(d.sites || []).map(s => `
-          <div class="row" style="grid-template-columns:1.4fr 2fr 0.7fr 1fr 0.5fr">
-            <div class="cell mono" style="font-size:12px">${esc(s.hostname)}</div>
-            <div class="cell mono dim" style="font-size:11px;white-space:normal">${esc((s.targets || []).join(" , "))}</div>
-            <div class="cell dim" style="font-size:11px">${s.mode === "standby" ? "主备" : "负载均衡"}</div>
-            <div class="cell dim" style="font-size:11px">${(s.targets || []).length} 个源站</div>
-            <div style="text-align:right"><button class="btn sm danger" data-del="${esc(s.id)}">删除</button></div>
-          </div>`).join("") || `<div class="empty">还没有配置</div>`}
-      </div>
+      <div class="card-h"><b>已配置</b><span>${(d.sites || []).length} 个域名 · 顺序即优先级</span></div>
+      ${(d.sites || []).map(s0 => `
+        <div style="border-top:1px solid var(--line);padding:12px 0">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <b class="mono">${esc(s0.hostname)}</b>
+            <span class="tag ${s0.mode === "standby" ? "warn" : "info"}">${s0.mode === "standby" ? "主备" : "负载均衡"}</span>
+            <span class="dim" style="font-size:11px">${(s0.targets || []).length} 个源站</span>
+            <span style="flex:1"></span>
+            <button class="btn sm danger" data-del="${esc(s0.id)}">删除</button>
+          </div>
+          <div style="margin-top:8px;display:grid;gap:6px">
+            ${(s0.targets || []).map((t, i) => `
+              <div style="display:flex;align-items:center;gap:8px">
+                <span class="tag ${i === 0 ? "ok" : ""}" style="min-width:44px;justify-content:center">${i === 0 ? "主" : "备" + i}</span>
+                <span class="mono dim" style="flex:1;font-size:11.5px">${esc(t)}</span>
+                <button class="btn sm" data-up="${esc(s0.id)}" data-i="${i}" ${i === 0 ? "disabled" : ""}>▲</button>
+                <button class="btn sm" data-down="${esc(s0.id)}" data-i="${i}" ${i === (s0.targets || []).length - 1 ? "disabled" : ""}>▼</button>
+              </div>`).join("")}
+          </div>
+        </div>`).join("") || `<div class="empty">还没有配置</div>`}
       <p class="dim" style="font-size:11px;margin:12px 0 0">
         用法：DNS 把域名指到本机 → 容器映射 <code>:${d.port || 8080}</code> → 访问域名即可。
         也可以把「发布服务」或 Cloudflare 隧道的源站直接填 <code>http://127.0.0.1:${d.port || 8080}</code>，由这里再分发。
@@ -1181,6 +1189,21 @@ async function viewSites(main) {
       toast("已创建"); render();
     } catch (e) { main.querySelector("#stOut").textContent = e.message; }
   };
+  const move = async (id, from, to) => {
+    const site = (d.sites || []).find(x => x.id === id);
+    if (!site) return;
+    const list = [...site.targets];
+    const [item] = list.splice(from, 1);
+    list.splice(to, 0, item);
+    try { await api(`/api/sites/${encodeURIComponent(id)}/update`, { method: "POST", body: JSON.stringify({ targets: list }) }); render(); }
+    catch (e) { toast(e.message, true); }
+  };
+  main.querySelectorAll("[data-up]").forEach(b => {
+    b.onclick = () => move(b.dataset.up, Number(b.dataset.i), Number(b.dataset.i) - 1);
+  });
+  main.querySelectorAll("[data-down]").forEach(b => {
+    b.onclick = () => move(b.dataset.down, Number(b.dataset.i), Number(b.dataset.i) + 1);
+  });
   main.querySelectorAll("[data-del]").forEach(b => {
     b.onclick = async () => {
       if (!confirm("删除这个聚合入口？")) return;

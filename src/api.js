@@ -8,7 +8,7 @@ import { wg, isManaged } from "./wgsrv.js";
 import { hostInCidr, clientConfig as clientConfigText } from "./wg.js";
 import { secretSetting, saveSecretSetting, seal, open as unseal } from "./secrets.js";
 import { startConnector, connectorStatus } from "./connector.js";
-import { listSites, probeSites, proxyStatus } from "./proxy.js";
+import { listSites, probeSites, proxyStatus, parseTargets } from "./proxy.js";
 import { startFrps, stopFrps, frpsStatus, frpcTemplate } from "./frps.js";
 import { startFrpc, stopFrpc, frpcStatus, startTailscaled, stopTailscaled, tailscaleStatus, tailscaleUp } from "./outbound.js";
 
@@ -1203,6 +1203,20 @@ export async function api(req, res, url, body) {
       .run(id, hostname, JSON.stringify(norm), body?.mode === "standby" ? "standby" : "lb", String(body?.note || "").slice(0, 120), now());
     addEvent("site", `新增聚合入口 ${hostname} → ${norm.length} 个源站`);
     return { ok: true, id };
+  }
+
+
+  // 调整源站顺序：顺序即优先级（第一个=主，依次备1/备2…）
+  if (seg[0] === "sites" && seg[2] === "update" && method === "POST") {
+    const row = db.prepare("SELECT * FROM sites WHERE id = ?").get(seg[1]);
+    if (!row) throw new Error("不存在");
+    const targets = (Array.isArray(body?.targets) ? body.targets : parseTargets(row.targets))
+      .map(x => String(x).trim()).filter(Boolean)
+      .map(t => (/^https?:\/\//.test(t) ? t : "http://" + t));
+    db.prepare("UPDATE sites SET targets = ?, mode = ? WHERE id = ?")
+      .run(JSON.stringify(targets), body?.mode === "standby" ? "standby" : row.mode, seg[1]);
+    addEvent("site", `调整 ${row.hostname} 源站顺序（${targets.length} 个）`);
+    return { ok: true, targets };
   }
 
   if (seg[0] === "sites" && seg[2] === "delete" && method === "POST") {
