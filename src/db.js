@@ -242,9 +242,18 @@ db.exec(`CREATE TABLE IF NOT EXISTS conn_samples (
 )`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_samples_dev ON conn_samples(device_id, at)");
 
-export function pruneSamples(days = 3) {
+export function pruneSamples(days = 3, perDevice = 500) {
   const cut = Math.floor(Date.now() / 1000) - days * 86400;
+  let n = 0;
   try {
-    return db.prepare("DELETE FROM conn_samples WHERE at < ?").run(cut).changes || 0;
-  } catch { return 0; }
+    n += db.prepare("DELETE FROM conn_samples WHERE at < ?").run(cut).changes || 0;
+    // 每台设备最多保留 500 条（采样 60 秒一条 ≈ 8 小时密集，历史靠 3 天兜底）
+    const ids = db.prepare("SELECT DISTINCT device_id FROM conn_samples").all();
+    for (const r of ids) {
+      n += db.prepare(`DELETE FROM conn_samples WHERE device_id = ? AND id NOT IN
+        (SELECT id FROM conn_samples WHERE device_id = ? ORDER BY at DESC LIMIT ?)`)
+        .run(r.device_id, r.device_id, perDevice).changes || 0;
+    }
+  } catch { /* ignore */ }
+  return n;
 }

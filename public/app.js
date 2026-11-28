@@ -42,6 +42,21 @@ function friendly(msg) {
   return msg;
 }
 
+
+/** 统一弹层：返回 mask/close，避免每个弹层重复写 close/onKey/appendChild */
+function openModal(html, opts = {}) {
+  const mask = document.createElement("div");
+  mask.className = "mask";
+  mask.innerHTML = html;
+  document.body.appendChild(mask);
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape" && !opts.pinned) close(); };
+  document.addEventListener("keydown", onKey);
+  const closeBtn = mask.querySelector('[data-act="close"]');
+  if (closeBtn) closeBtn.onclick = close;
+  return { mask, close };
+}
+
 async function api(path, opts = {}) {
   let res;
   try {
@@ -187,16 +202,7 @@ async function viewOverview(main, silent) {
     <div class="grid c2">
       <div class="card">
         <div class="card-h"><b>网络</b><span>${esc(d.meshCidr)}</span></div>
-        ${(d.devices || []).filter(x => !x.revoked_at).length > 1 && (d.devices || []).every(x => x.revoked_at || x.path !== "direct") && S.p2p === false ? `
-      <div class="card" style="margin-bottom:12px;border-color:var(--info)">
-        <b>现在所有设备都经控制台转发</b>
-        <div class="dim" style="font-size:11.5px;margin-top:4px">
-          跨设备延迟会变成「各自到控制台之和」。如果两台本来就在同一机房/同城，开启 P2P 直连可以把延迟降到几毫秒；
-          万一某台打不通，控制台会在 3 分钟内自动把它回落到中继。
-        </div>
-        <div style="margin-top:8px"><button class="btn primary" data-act="p2pon">开启 P2P 直连</button></div>
-      </div>` : ""}
-    <div class="rows">
+        <div class="rows">
           ${d.groups.slice(0, 6).map(g => `
             <div class="row" style="grid-template-columns:10px 1fr auto">
               <span class="dot ${g.online === g.total ? "ok" : "warn"}"></span>
@@ -250,6 +256,8 @@ async function viewDevices(main) {
   // 设备页直接给出「为什么离线」的结论，不用翻日志
   const chk = S.backend === "wg" ? await api("/api/wg/check").catch(() => null) : null;
   const neverSeen = (d.devices || []).filter(x => !x.revoked_at && !x.last_seen).length;
+  const allDev = (d.devices || []);
+  const allRelay = allDev.filter(x => !x.revoked_at).length > 1 && allDev.every(x => x.revoked_at || x.path !== "direct");
   main.innerHTML = `
     <div class="head">
       <div><h1>设备</h1><div class="sub">${d.total} 台 · ${d.online} 在线 · ${d.relay} 台走中继</div></div>
@@ -359,9 +367,7 @@ async function viewDevices(main) {
 
 /* ---------------- 设备配置（部署端集中改） ---------------- */
 function openEditDevice(dev) {
-  const mask = document.createElement("div");
-  mask.className = "mask";
-  mask.innerHTML = `
+  const { mask } = openModal(`
     <div class="modal">
       <h3>配置 · ${esc(dev.name)}</h3>
       <div class="sub">这些都在面板改，保存后 60 秒内自动下发到节点（Endpoint 除外，那项要重新部署）</div>
@@ -377,12 +383,8 @@ function openEditDevice(dev) {
         <button class="btn" data-act="close">取消</button>
         <button class="btn primary" data-act="save">保存</button>
       </div>
-    </div>`;
-  document.body.appendChild(mask);
-  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
-  const onKey = (e) => { if (e.key === "Escape") close(); };
-  document.addEventListener("keydown", onKey);
-  mask.querySelector('[data-act="close"]').onclick = close;
+    </div>`);
+  const close = () => mask.remove();
   mask.querySelector('[data-act="save"]').onclick = async () => {
     try {
       await api(`/api/devices/${encodeURIComponent(dev.id)}/edit`, {
@@ -403,20 +405,13 @@ function openEditDevice(dev) {
 
 /* ---------------- 连接记录（每 60 秒一条，保留 3 天） ---------------- */
 async function openHistory(dev) {
-  const mask = document.createElement("div");
-  mask.className = "mask";
-  mask.innerHTML = `<div class="modal" style="width:min(720px,100%)">
+  const { mask } = openModal(`<div class="modal" style="width:min(720px,100%)">
     <h3>连接记录 · ${esc(dev.name)}</h3>
-    <div class="sub">上半部分是控制台下发给它的完整对端表；下半部分是每 60 秒的采样（保留 3 天）</div>
+    <div class="sub">上半部分是控制台下发给它的完整对端表；下半部分是每 60 秒的采样（保留 3 天，每台最多 500 条）</div>
     <div id="routeBody"></div>
     <div id="histBody" class="empty">加载中…</div>
     <div class="modal-actions"><button class="btn" data-act="close">关闭</button></div>
-  </div>`;
-  document.body.appendChild(mask);
-  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey); };
-  const onKey = (e) => { if (e.key === "Escape") close(); };
-  document.addEventListener("keydown", onKey);
-  mask.querySelector('[data-act="close"]').onclick = close;
+  </div>`);
 
   try {
     const rt = await api(`/api/devices/${encodeURIComponent(dev.id)}/routes`).catch(() => ({ rows: [], p2p: false }));
@@ -569,6 +564,7 @@ function rowDevice(x) {
 /* ---------------- 中继 ---------------- */
 async function viewRelays(main) {
   const d = await api("/api/relays");
+  const devs = await api("/api/devices").catch(() => ({ devices: [] }));
   S.data.relays = d;
   main.innerHTML = `
     <div class="head">
@@ -598,7 +594,14 @@ async function viewRelays(main) {
             <span>本月 ${fmtGb(r.used_gb)}${r.quota_gb ? " / " + fmtGb(r.quota_gb) : ""}</span>
             <span>${r.state === "online" ? "在线" : r.state === "offline" ? "不可达" : "未验证"}</span>
           </div>
-          <div class="bar" style="margin:6px 0 12px"><i style="width:${r.quota_gb ? Math.min(100, Math.round(r.used_gb / r.quota_gb * 100)) : 5}%"></i></div>
+          <div class="bar" style="margin:6px 0 8px"><i style="width:${r.quota_gb ? Math.min(100, Math.round(r.used_gb / r.quota_gb * 100)) : 5}%"></i></div>
+          ${(() => {
+            const name = (r.name || "").split("·").pop().trim();
+            const users = (devs.devices || []).filter(x => !x.revoked_at && x.path === "relay" && (String(x.relay || "").includes(name) || String(x.relay || "").includes(r.region)));
+            return users.length
+              ? `<div class="dim" style="font-size:11px;margin-bottom:8px">正在走这个中继：${users.map(u => `<span class="tag">${esc(u.name)}</span>`).join(" ")}</div>`
+              : `<div class="dim" style="font-size:11px;margin-bottom:8px">暂无设备走这个中继</div>`;
+          })()}
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn sm" data-relay="${esc(r.id)}" data-op="toggle">${r.enabled ? "从地图摘除" : "启用"}</button>
             <button class="btn sm" data-relay="${esc(r.id)}" data-op="vis">${r.visibility === "private" ? "改为公网" : "改为仅内网"}</button>
@@ -1308,7 +1311,7 @@ async function viewSettings(main) {
           <button class="btn ${wg.mode === "custom" ? "" : "primary"}" data-mode="builtin">自动 · 部署端当服务端</button>
           <button class="btn ${wg.mode === "custom" ? "primary" : ""}" data-mode="custom">自定义 · 中继 / OpenWrt / 端口映射</button>
           <button class="btn" id="wgCheck">检测连通性</button>
-          <button class="btn" id="toggleP2P">${S.p2p ? "关闭 P2P（全走控制台）" : "开启 P2P 直连"}</button>
+          <button class="btn" id="toggleP2P">${S.p2p ? "强制全走控制台（关闭直连）" : "恢复自动：直连优先"}</button>
         </div>
         <div id="wgCheckOut"></div>
 

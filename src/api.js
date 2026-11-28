@@ -173,7 +173,7 @@ export function peersForNode(nodeToken, hostHeader) {
   // P2P 关闭（全局或单台）时，仍然下发 /32 对端，但 endpoint 一律指向控制台自己 ——
   // 这样节点上**已经装好的旧脚本**也会在下一轮把 endpoint 改对，不需要登机器重装脚本。
   // 数据流：A → 控制台 → B（控制台需要 ip_forward=1，启动时自动开）。
-  const p2pGlobal = setting("p2p") === "1";   // 默认关闭：保证所有设备互通，直连是可选优化
+  const p2pGlobal = setting("p2p") !== "0";   // 默认直连优先；某台打不通会自动回落（p2p_miss）
   const hubEndpoint = hubEp(hostHeader);
 
   const peers = rows
@@ -353,7 +353,7 @@ export function connectionHistory(deviceId, days = 3) {
 export function routeTableFor(deviceId, hostHeader) {
   const self = db.prepare("SELECT * FROM devices WHERE id = ?").get(deviceId);
   if (!self) throw new Error("设备不存在");
-  const p2pGlobal = setting("p2p") === "1";
+  const p2pGlobal = setting("p2p") !== "0";
   const hub = hubEp(hostHeader);
   const rows = db.prepare(`SELECT d.id, d.name, d.mesh_ip, d.endpoint, d.reported_endpoint, d.wg_port, d.routes, d.p2p, d.via_ts, p.public_key
     FROM devices d JOIN wg_peers p ON p.device_id = d.id WHERE d.revoked_at IS NULL AND d.id != ?`).all(deviceId);
@@ -1121,7 +1121,7 @@ export async function api(req, res, url, body) {
   }
 
   if (seg[0] === "devices" && seg[2] === "routes" && method === "GET") {
-    return { rows: routeTableFor(seg[1], req.headers.host), p2p: setting("p2p") === "1" };
+    return { rows: routeTableFor(seg[1], req.headers.host), p2p: setting("p2p") !== "0" };
   }
 
   if (seg[0] === "devices" && seg[2] === "history" && method === "GET") {
